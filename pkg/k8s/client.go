@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/spf13/cobra"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -19,9 +18,9 @@ type Client struct {
 }
 
 // NewClient creates a new Kubernetes client
-func NewClient(cmd *cobra.Command) (*Client, error) {
+func NewClient(kubeconfigPath string) (*Client, error) {
 	// Get kubeconfig path
-	kubeconfig, _ := cmd.Flags().GetString("kubeconfig")
+	kubeconfig := kubeconfigPath
 	if kubeconfig == "" {
 		if home := homedir.HomeDir(); home != "" {
 			kubeconfig = filepath.Join(home, ".kube", "config")

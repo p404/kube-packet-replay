@@ -7,8 +7,10 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"sync"
 	"time"
 
+	"github.com/p404/kube-packet-replay/pkg/cli"
 	"github.com/p404/kube-packet-replay/pkg/k8s"
 )
 
@@ -17,8 +19,26 @@ const DebugImage = "nicolaka/netshoot:latest"
 
 // CapturePackets captures network packets from a Kubernetes pod
 func CapturePackets(client *k8s.Client, namespace, podName, containerName, filterExpr, outputFile string, duration time.Duration, verbose bool) error {
-	fmt.Printf("Capturing packets matching filter '%s' from pod %s/%s in namespace %s\n",
-		filterExpr, podName, containerName, namespace)
+	var err error
+	
+	// Show starting message with date
+	currentTime := time.Now().Format("2006-01-02 15:04:05")
+	fmt.Printf("\n%s %s\n\n", 
+		cli.Colorize(cli.ColorBold, "KUBE-PACKET-REPLAY CAPTURE STARTED AT:"), 
+		cli.Colorize(cli.ColorBlue, currentTime))
+	
+	// Step 1: Setup and validation
+	fmt.Println(cli.Step(1, "Setting up packet capture"))
+	
+	// Use different formatting to emphasize the filter more
+	fmt.Printf("  %s\n", cli.Colorize(cli.ColorBold+cli.ColorYellow, "FILTER: '"+filterExpr+"'"))
+	fmt.Printf("  %s: %s/%s\n", 
+		cli.Colorize(cli.ColorBlue, "Target"),
+		cli.Colorize(cli.ColorBold, podName),
+		cli.Colorize(cli.ColorBold, containerName))
+	fmt.Printf("  %s: %s\n", 
+		cli.Colorize(cli.ColorBlue, "Namespace"), 
+		cli.Colorize(cli.ColorBold, namespace))
 
 	// Create a debug container name with timestamp to avoid collisions
 	timestamp := time.Now().Unix()
@@ -34,8 +54,6 @@ func CapturePackets(client *k8s.Client, namespace, podName, containerName, filte
 		// Add .gz extension if not already present
 		outputFile = outputFile + ".gz"
 	}
-
-	fmt.Printf("Creating debug container with name: %s in pod: %s\n", debugContainerName, podName)
 
 	// Store the original container name for fallback file access
 	origContainerName := containerName
@@ -56,15 +74,53 @@ func CapturePackets(client *k8s.Client, namespace, podName, containerName, filte
 		tcpdumpCmd,
 	}
 
-	// Create debug container using kubectl debug
-	fmt.Println("Debug container command:\n")
-	fmt.Println(tcpdumpCmd)
-	err := client.CreateDebugContainerWithKubectl(namespace, podName, containerName, DebugImage, command, debugContainerName)
+	// Create debug container
+	if verbose {
+		fmt.Println(cli.Info("Debug container command:"))
+		fmt.Println(tcpdumpCmd)
+	}
+	
+	fmt.Printf("  Creating debug container %s...\n", cli.Colorize(cli.ColorBold, debugContainerName))
+	err = client.CreateDebugContainerWithKubectl(namespace, podName, containerName, DebugImage, command, debugContainerName)
 	if err != nil {
 		return fmt.Errorf("failed to create debug container: %v", err)
 	}
-
-	fmt.Printf("Debug container '%s' created. Starting packet capture...\n", debugContainerName)
+	fmt.Println("  " + cli.Success("Done"))
+	fmt.Println()
+	
+	// Step 2: Capturing packets
+	fmt.Println(cli.Step(2, "Capturing network packets"))
+	if duration > 0 {
+		fmt.Printf("  Capture will run for %s...\n", cli.Colorize(cli.ColorBold, duration.String()))
+	} else {
+		fmt.Printf("  %s to stop the capture\n", cli.Colorize(cli.ColorYellow, "Press Ctrl+C"))
+	}
+	
+	// Show a spinner while capturing
+	spinnerDone := make(chan bool)
+	var spinnerClosed sync.Once
+	
+	// Function to safely close the spinner channel once
+	safeCloseSpinner := func() {
+		spinnerClosed.Do(func() {
+			close(spinnerDone)
+		})
+	}
+	
+	go func() {
+		iteration := 0
+		for {
+			select {
+			case <-spinnerDone:
+				fmt.Print("\r  Capture complete!                      \n")
+				return
+			default:
+				fmt.Printf("\r  Capturing packets %s ", cli.Colorize(cli.ColorBlue, cli.LoadingSpinner(iteration)))
+				iteration++
+				time.Sleep(200 * time.Millisecond)
+			}
+		}
+	}()
 
 	// Set up signal handling for graceful termination
 	ctx, cancel := context.WithCancel(context.Background())
@@ -74,86 +130,102 @@ func CapturePackets(client *k8s.Client, namespace, podName, containerName, filte
 	// Handle manual interruption with Ctrl+C
 	go func() {
 		<-signalChan
-		fmt.Println("Interrupt received, stopping capture...")
+		fmt.Println(cli.Warning("Interrupt received, stopping capture..."))
 		cancel()
+		safeCloseSpinner()
 	}()
 
 	// Handle duration-based interruption
 	if duration > 0 {
 		go func() {
-			fmt.Printf("Capture will run for %v...\n", duration)
 			time.Sleep(duration)
-			fmt.Println("Duration limit reached, stopping capture...")
+			fmt.Println(cli.Info("Duration limit reached, stopping capture..."))
 			cancel()
+			safeCloseSpinner()
 		}()
-	} else {
-		fmt.Println("Press Ctrl+C to stop the capture...")
 	}
 
 	// Wait for interruption
 	<-ctx.Done()
+	
+	// Stop the spinner
+	safeCloseSpinner()
+	time.Sleep(200 * time.Millisecond) // Give spinner a moment to clean up
+
+	fmt.Println("  " + cli.Success("Done"))
+	fmt.Println()
+	
+	// Step 3: Processing capture file
+	fmt.Println(cli.Step(3, "Processing capture file"))
 
 	// Get list of containers for better debug container detection
 	containers := extractContainersFromPod(client, namespace, podName)
 	if len(containers) > 0 && verbose {
-		fmt.Printf("Available containers in pod: %v\n", containers)
+		fmt.Printf("  Available containers in pod: %v\n", containers)
 	}
 
 	debugContainer := debugContainerName
 
 	if verbose {
-		fmt.Printf("Using debug container: %s\n", debugContainer)
+		fmt.Printf("  Using debug container: %s\n", debugContainer)
 	}
 
-	// Stop tcpdump first to trigger container-side compression
-	fmt.Printf("Attempting to stop tcpdump in debug container '%s'...\n", debugContainer)
+	// Process the capture - First stop tcpdump
+	fmt.Printf("  Stopping packet capture...\n")
 	tryKillTcpdump(client, namespace, podName, debugContainer, verbose)
 
 	// Wait for compression to complete and retrieve file
-	fmt.Println("Waiting for container to compress the capture file...")
+	fmt.Printf("  Waiting for container to process capture file...\n")
 	output, fileSuccess, _, _ := WaitForCompressedFile(
 		client, namespace, podName, debugContainer, 
 		rawCaptureFile, captureFilename, verbose)
-
+	
 	// If we couldn't get the file from the debug container, try other containers
 	if !fileSuccess {
-		// Copy the capture file from the pod
-		fmt.Println("Copying capture file from the pod...")
-
 		// Try with the original container
 		if origContainerName != "" {
 			if verbose {
-				fmt.Printf("Attempting to copy the capture file from the original container: %s\n", origContainerName)
+				fmt.Printf("  Attempting to copy the capture file from the original container: %s\n", origContainerName)
+			} else {
+				fmt.Printf("  Trying alternative container...\n")
 			}
 
 			// Try compressed file first, then raw if needed
-			output, err = tryExecCat(client, namespace, podName, origContainerName, captureFilename, verbose)
-			if err != nil && verbose {
-				fmt.Printf("Compressed file not found in original container, trying raw capture file...\n")
-				output, err = tryExecCat(client, namespace, podName, origContainerName, rawCaptureFile, verbose)
+			var err2 error
+			var localOutput string
+			localOutput, err2 = tryExecCat(client, namespace, podName, origContainerName, captureFilename, verbose)
+			if err2 != nil && verbose {
+				fmt.Printf("  Compressed file not found in original container, trying raw capture file...\n")
+				localOutput, err2 = tryExecCat(client, namespace, podName, origContainerName, rawCaptureFile, verbose)
 			}
 			
-			if err != nil {
-				if verbose {
-					fmt.Printf("Failed to cat file from original container: %v\n", err)
-				}
-			} else {
+			if err2 == nil {
 				fileSuccess = true
-				fmt.Printf("Successfully retrieved capture data (%d bytes) from original container.\n", len(output))
+				output = localOutput
+				if verbose {
+					fmt.Printf("  Successfully retrieved capture data (%d bytes) from original container.\n", len(output))
+				}
 			}
 		}
 
 		// If still not successful, try other containers
 		if !fileSuccess {
 			// Try with the debug container again (may still be running)
-			output, err = tryExecCat(client, namespace, podName, debugContainer, captureFilename, verbose)
-			if err != nil {
-				if verbose {
-					fmt.Printf("Failed to cat file from debug container after stopping tcpdump: %v\n", err)
-				}
+			if verbose {
+				fmt.Printf("  Trying debug container again...\n")
 			} else {
+				fmt.Printf("  Checking other containers...\n")
+			}
+			
+			var err2 error
+			var localOutput string
+			localOutput, err2 = tryExecCat(client, namespace, podName, debugContainer, captureFilename, verbose)
+			if err2 == nil {
 				fileSuccess = true
-				fmt.Printf("Successfully retrieved capture data (%d bytes) from debug container (after stopping tcpdump).\n", len(output))
+				output = localOutput
+				if verbose {
+					fmt.Printf("  Successfully retrieved capture data (%d bytes) from debug container (after stopping tcpdump).\n", len(output))
+				}
 			}
 
 			// Try each container
@@ -163,16 +235,17 @@ func CapturePackets(client *k8s.Client, namespace, podName, containerName, filte
 					// Skip debug containers as we already tried those
 					if !strings.Contains(c, "debug") {
 						if verbose {
-							fmt.Printf("Trying to copy capture file from app container: %s\n", c)
+							fmt.Printf("  Trying to copy capture file from app container: %s\n", c)
 						}
-						output, err = tryExecCat(client, namespace, podName, c, captureFilename, verbose)
-						if err != nil {
+						var err2 error
+						var localOutput string
+						localOutput, err2 = tryExecCat(client, namespace, podName, c, captureFilename, verbose)
+						if err2 == nil {
 							if verbose {
-								fmt.Printf("Failed to cat file from app container: %v\n", err)
+								fmt.Printf("  Successfully copied file from container: %s\n", c)
 							}
-						} else {
-							fmt.Printf("Successfully copied file from container: %s\n", c)
 							fileSuccess = true
+							output = localOutput
 							break
 						}
 					}
@@ -183,16 +256,17 @@ func CapturePackets(client *k8s.Client, namespace, podName, containerName, filte
 					for _, c := range containers {
 						if strings.Contains(c, "debug") && c != debugContainer {
 							if verbose {
-								fmt.Printf("Trying to copy capture file from debug container: %s\n", c)
+								fmt.Printf("  Trying to copy capture file from debug container: %s\n", c)
 							}
-							output, err = tryExecCat(client, namespace, podName, c, captureFilename, verbose)
-							if err != nil {
+							var err2 error
+							var localOutput string
+							localOutput, err2 = tryExecCat(client, namespace, podName, c, captureFilename, verbose)
+							if err2 == nil {
 								if verbose {
-									fmt.Printf("Failed to cat file from debug container: %v\n", err)
+									fmt.Printf("  Successfully copied file from container: %s\n", c)
 								}
-							} else {
-								fmt.Printf("Successfully copied file from container: %s\n", c)
 								fileSuccess = true
+								output = localOutput
 								break
 							}
 						}
@@ -206,8 +280,27 @@ func CapturePackets(client *k8s.Client, namespace, podName, containerName, filte
 		return fmt.Errorf("failed to retrieve capture file from any container")
 	}
 
-	fmt.Printf("Successfully retrieved capture data (%d bytes).\n", len(output))
+	fmt.Println("  " + cli.Success("Done"))
+	fmt.Println()
 	
-	// Save the file
-	return SaveCaptureToFile(outputFile, output, verbose)
+	// Step 4: Save the file locally
+	fmt.Println(cli.Step(4, "Saving capture file"))
+	bytes := len(output)
+	if verbose {
+		fmt.Printf("  Retrieved %d bytes of capture data\n", bytes)
+	}
+	fmt.Printf("  Saving to %s...\n", outputFile)
+	
+	var err3 error
+	err3 = SaveCaptureToFile(outputFile, output, verbose)
+	if err3 != nil {
+		return err3
+	}
+	
+	// Show the capture information and then the final done message
+	fmt.Printf("  Packet capture downloaded: %s (%s)\n", 
+		cli.Colorize(cli.ColorBold, outputFile),
+		cli.Colorize(cli.ColorBlue, fmt.Sprintf("%d bytes", bytes)))
+	fmt.Println("  " + cli.Success("Done"))
+	return nil
 }
