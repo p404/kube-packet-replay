@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os/exec"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -63,6 +65,57 @@ func (c *Client) CreateDebugContainer(namespace, podName, containerName, debugIm
 
 // ExecInContainer executes a command in a container and returns the output
 func (c *Client) ExecInContainer(namespace, podName, containerName string, command []string) (string, error) {
+	// Try using kubectl directly first when a container name is specified
+	if containerName != "" {
+		// Build the kubectl command with quoted arguments to handle spaces
+		kubectlArgs := []string{"exec"}
+		
+		// Add namespace
+		kubectlArgs = append(kubectlArgs, "-n", namespace)
+		
+		// Add container name
+		kubectlArgs = append(kubectlArgs, "-c", containerName)
+		
+		// Add pod name
+		kubectlArgs = append(kubectlArgs, podName)
+		
+		// Add command with -- separator
+		kubectlArgs = append(kubectlArgs, "--")
+		kubectlArgs = append(kubectlArgs, command...)
+		
+		// Execute kubectl command
+		cmd := exec.Command("kubectl")
+		
+		// Add kubeconfig if specified
+		if c.ConfigPath != "" {
+			cmd.Args = append(cmd.Args, "--kubeconfig", c.ConfigPath)
+		}
+		
+		// Add the arguments
+		cmd.Args = append(cmd.Args, kubectlArgs...)
+		
+		// Capture output and errors
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		
+		// Execute the command
+		err := cmd.Run()
+		if err == nil {
+			// Command succeeded
+			return stdout.String(), nil
+		}
+		
+		// If the error mentions "choose one of:" then return that error to help with container detection
+		if strings.Contains(stderr.String(), "choose one of:") {
+			return "", fmt.Errorf("failed to execute command: %v, stderr: %s", err, stderr.String())
+		}
+		
+		// For other errors, try falling back to the API method
+		// But don't fall back if this was already us trying all containers systematically
+	}
+	
+	// Use the Kubernetes API method
 	req := c.ClientSet.CoreV1().RESTClient().Post().
 		Resource("pods").
 		Name(podName).
@@ -91,7 +144,12 @@ func (c *Client) ExecInContainer(namespace, podName, containerName string, comma
 	})
 
 	if err != nil {
-		return "", fmt.Errorf("failed to execute command: %v, stderr: %s", err, stderr.String())
+		// Extract container names from the error if possible
+		errorMsg := stderr.String()
+		if strings.Contains(errorMsg, "choose one of:") {
+			return "", fmt.Errorf("failed to execute command: %v, stderr: %s", err, errorMsg)
+		}
+		return "", fmt.Errorf("failed to execute command: %v, stderr: %s", err, errorMsg)
 	}
 
 	return stdout.String(), nil

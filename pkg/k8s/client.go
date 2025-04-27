@@ -13,8 +13,9 @@ import (
 
 // Client is a wrapper around the Kubernetes clientset
 type Client struct {
-	ClientSet kubernetes.Interface
-	Config    *rest.Config
+	ClientSet   kubernetes.Interface
+	Config      *rest.Config
+	ConfigPath  string // Path to kubeconfig file
 }
 
 // NewClient creates a new Kubernetes client
@@ -52,7 +53,8 @@ func NewClient(cmd *cobra.Command) (*Client, error) {
 	}
 
 	return &Client{
-		ClientSet: clientset,
-		Config:    config,
+		ClientSet:  clientset,
+		Config:     config,
+		ConfigPath: kubeconfig,
 	}, nil
 }

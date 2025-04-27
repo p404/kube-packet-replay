@@ -108,6 +108,9 @@ Examples:
 			duration, _ = cmd.Flags().GetDuration("duration")
 		}
 
+		// Get verbose mode flag
+		verbose, _ := cmd.Flags().GetBool("verbose")
+
 		// Create Kubernetes client
 		k8sClient, err := k8s.NewClient(cmd)
 		if err != nil {
@@ -115,7 +118,7 @@ Examples:
 		}
 
 		// Capture packets
-		return capture.CapturePackets(k8sClient, namespace, podName, containerName, filterExpr, outputFile, duration)
+		return capture.CapturePackets(k8sClient, namespace, podName, containerName, filterExpr, outputFile, duration, verbose)
 	},
 }
 
@@ -123,5 +126,6 @@ func init() {
 	captureCmd.Flags().StringP("output", "o", "", "output file name (default: pod-name.pcap)")
 	captureCmd.Flags().DurationP("duration", "d", 0, "duration of capture (e.g. 30s, 5m, 1h), 0 means capture until interrupted")
 	captureCmd.Flags().IntP("minutes", "m", 0, "duration of capture in minutes (overrides --duration if specified)")
+	captureCmd.Flags().BoolP("verbose", "v", false, "enable verbose output for debugging")
 	rootCmd.AddCommand(captureCmd)
 }
