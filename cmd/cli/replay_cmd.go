@@ -42,8 +42,8 @@ For example:
 				return err
 			}
 
-			// Execute replay
-			return replay.ReplayPackets(client, namespace, podName, containerName, inputFile)
+			// Execute replay with default options
+			return replay.ReplayPackets(client, namespace, podName, containerName, inputFile, nil)
 		},
 	}
 
