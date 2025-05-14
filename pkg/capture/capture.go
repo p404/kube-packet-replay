@@ -32,10 +32,18 @@ func CapturePackets(client *k8s.Client, namespace, podName, containerName, filte
 	
 	// Use different formatting to emphasize the filter more
 	fmt.Printf("  %s\n", cli.Colorize(cli.ColorBold+cli.ColorYellow, "FILTER: '"+filterExpr+"'"))
-	fmt.Printf("  %s: %s/%s\n", 
-		cli.Colorize(cli.ColorBlue, "Target"),
-		cli.Colorize(cli.ColorBold, podName),
-		cli.Colorize(cli.ColorBold, containerName))
+	
+	// Display the target pod name with highlighted formatting to make it clear
+	fmt.Printf("  %s: %s\n", 
+		cli.Colorize(cli.ColorBlue, "Target Pod"),
+		cli.Colorize(cli.ColorBold, podName))
+	
+	// Display container name if specified
+	if containerName != "" {
+		fmt.Printf("  %s: %s\n", 
+			cli.Colorize(cli.ColorBlue, "Container"),
+			cli.Colorize(cli.ColorBold, containerName))
+	}
 	fmt.Printf("  %s: %s\n", 
 		cli.Colorize(cli.ColorBlue, "Namespace"), 
 		cli.Colorize(cli.ColorBold, namespace))
