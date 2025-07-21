@@ -10,8 +10,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/p404/kube-packet-replay/pkg/cli"
 	"github.com/p404/kube-packet-replay/pkg/k8s"
+	outpkg "github.com/p404/kube-packet-replay/pkg/output"
 )
 
 // MultiCaptureResult represents the result of capturing packets from a single pod
@@ -31,13 +31,14 @@ func CapturePacketsFromResource(client *k8s.Client, namespace, resourceName, con
 	filterExpr, outputFileTemplate string, duration time.Duration, verbose bool) error {
 	
 	// Show starting message with date
+	out := outpkg.Default()
 	currentTime := time.Now().Format("2006-01-02 15:04:05")
-	fmt.Printf("\n%s %s\n\n", 
-		cli.Colorize(cli.ColorBold, "KUBE-PACKET-REPLAY MULTI-POD CAPTURE STARTED AT:"), 
-		cli.Colorize(cli.ColorBlue, currentTime))
+	out.Print("\n%s %s\n\n", 
+		out.(*outpkg.ConsoleWriter).FormatBold("KUBE-PACKET-REPLAY MULTI-POD CAPTURE STARTED AT:"), 
+		out.(*outpkg.ConsoleWriter).Colorize(outpkg.ColorBlue, currentTime))
 	
 	// Step 1: Discover resource and pods
-	fmt.Println(cli.Step(1, "Discovering Kubernetes resources"))
+	out.Step(1, "Discovering Kubernetes resources")
 
 	// Find the resource and its associated pods
 	resourceInfo, err := client.GetPodsFromResource(namespace, resourceName)
@@ -52,37 +53,38 @@ func CapturePacketsFromResource(client *k8s.Client, namespace, resourceName, con
 	}
 	
 	// Show resource information
-	fmt.Printf("  %s: %s\n", 
-		cli.Colorize(cli.ColorBlue, "Resource Type"), 
-		cli.Colorize(cli.ColorBold, string(resourceInfo.Type)))
-	fmt.Printf("  %s: %s\n", 
-		cli.Colorize(cli.ColorBlue, "Resource Name"), 
-		cli.Colorize(cli.ColorBold, resourceInfo.Name))
-	fmt.Printf("  %s: %s\n", 
-		cli.Colorize(cli.ColorBlue, "Namespace"), 
-		cli.Colorize(cli.ColorBold, namespace))
-	fmt.Printf("  %s: %s\n", 
-		cli.Colorize(cli.ColorBlue, "Pods Found"), 
-		cli.Colorize(cli.ColorBold, fmt.Sprintf("%d", len(resourceInfo.PodNames))))
+	out.Print("  %s: %s\n", 
+		out.(*outpkg.ConsoleWriter).Colorize(outpkg.ColorBlue, "Resource Type"), 
+		out.(*outpkg.ConsoleWriter).FormatBold( string(resourceInfo.Type)))
+	out.Print("  %s: %s\n", 
+		out.(*outpkg.ConsoleWriter).Colorize(outpkg.ColorBlue, "Resource Name"), 
+		out.(*outpkg.ConsoleWriter).FormatBold( resourceInfo.Name))
+	out.Print("  %s: %s\n", 
+		out.(*outpkg.ConsoleWriter).Colorize(outpkg.ColorBlue, "Namespace"), 
+		out.(*outpkg.ConsoleWriter).FormatBold( namespace))
+	out.Print("  %s: %s\n", 
+		out.(*outpkg.ConsoleWriter).Colorize(outpkg.ColorBlue, "Pods Found"), 
+		out.(*outpkg.ConsoleWriter).FormatBold( fmt.Sprintf("%d", len(resourceInfo.PodNames))))
 	
 	// List the pods
-	fmt.Printf("  %s:\n", cli.Colorize(cli.ColorBlue, "Target Pods"))
+	out.Print("  %s:\n", out.(*outpkg.ConsoleWriter).Colorize(outpkg.ColorBlue, "Target Pods"))
 	for i, podName := range resourceInfo.PodNames {
-		fmt.Printf("    %d. %s\n", i+1, cli.Colorize(cli.ColorBold, podName))
+		out.Print("    %d. %s\n", i+1, out.(*outpkg.ConsoleWriter).FormatBold( podName))
 	}
 
 	// Use different formatting to emphasize the filter more
-	fmt.Printf("  %s\n", cli.Colorize(cli.ColorBold+cli.ColorYellow, "FILTER: '"+filterExpr+"'"))
+	out.Print("  %s\n", out.(*outpkg.ConsoleWriter).FormatHighlight( "FILTER: '"+filterExpr+"'"))
 
 	// Display capture duration if specified
 	if duration > 0 {
-		fmt.Printf("  %s: %s\n", 
-			cli.Colorize(cli.ColorBlue, "Capture Duration"),
-			cli.Colorize(cli.ColorBold, duration.String()))
+		out.Print("  %s: %s\n", 
+			out.(*outpkg.ConsoleWriter).Colorize(outpkg.ColorBlue, "Capture Duration"),
+			out.(*outpkg.ConsoleWriter).FormatBold( duration.String()))
 	}
 
 	// Step 2: Set up capture for each pod
-	fmt.Println(cli.Step(2, "Setting up packet capture for pods"))
+	out.Step(2, "Setting up packet capture for pods")
+	out.Println()
 	
 	// Create mutexes and channels for synchronization
 	results := make([]MultiCaptureResult, 0, len(resourceInfo.PodNames))
@@ -118,13 +120,13 @@ func CapturePacketsFromResource(client *k8s.Client, namespace, resourceName, con
 			defaultContainer, err := client.GetDefaultContainer(namespace, podName)
 			if err != nil {
 				if verbose {
-					fmt.Printf("  Warning: Failed to get default container for pod %s: %v\n", podName, err)
+					out.Print("  Warning: Failed to get default container for pod %s: %v\n", podName, err)
 				}
 				// Just use an empty string - the capture will try to pick a valid container
 			} else {
 				targetContainer = defaultContainer
 				if verbose {
-					fmt.Printf("  Using default container for pod %s: %s\n", podName, targetContainer)
+					out.Print("  Using default container for pod %s: %s\n", podName, targetContainer)
 				}
 			}
 		}
@@ -153,9 +155,9 @@ func CapturePacketsFromResource(client *k8s.Client, namespace, resourceName, con
 		}
 		
 		// Display capture setup info
-		fmt.Printf("  Setting up capture for pod %s\n", cli.Colorize(cli.ColorBold, podName))
-		fmt.Printf("    Container: %s\n", targetContainer)
-		fmt.Printf("    Output file: %s\n", outputFile)
+		out.Print("  Setting up capture for pod %s\n", out.(*outpkg.ConsoleWriter).FormatBold( podName))
+		out.Print("    Container: %s\n", targetContainer)
+		out.Print("    Output file: %s\n", outputFile)
 		
 		// Add to list of setups
 		captureSetups = append(captureSetups, CaptureSetup{
@@ -167,7 +169,7 @@ func CapturePacketsFromResource(client *k8s.Client, namespace, resourceName, con
 	
 	// Step 2.2: Now launch captures for all pods after setup is complete
 	fmt.Println()
-	fmt.Printf("  %s\n", cli.Info("Launching captures for all pods..."))
+	out.Info("  Launching captures for all pods...")
 	time.Sleep(500 * time.Millisecond) // Small delay for visual clarity
 	
 	// Launch all captures one by one
@@ -191,7 +193,7 @@ func CapturePacketsFromResource(client *k8s.Client, namespace, resourceName, con
 			
 			// Use mutex to synchronize console output
 			outputMutex.Lock()
-			fmt.Printf("  → Starting capture on pod: %s\n", cli.Colorize(cli.ColorBold, podName))
+			out.Print("  → Starting capture on pod: %s\n", out.(*outpkg.ConsoleWriter).FormatBold( podName))
 			outputMutex.Unlock()
 			
 			// Set up the result struct
@@ -222,7 +224,7 @@ func CapturePacketsFromResource(client *k8s.Client, namespace, resourceName, con
 				
 				// Synchronize error message output
 				outputMutex.Lock()
-				fmt.Printf("  ✗ Error capturing from pod %s: %v\n", cli.Colorize(cli.ColorBold, podName), err)
+				out.Print("  ✗ Error capturing from pod %s: %v\n", out.(*outpkg.ConsoleWriter).FormatBold( podName), err)
 				outputMutex.Unlock()
 			} else {
 				result.Success = true
@@ -234,8 +236,8 @@ func CapturePacketsFromResource(client *k8s.Client, namespace, resourceName, con
 				fmt.Print("\n") // Move to a new line from where the spinner might be
 				
 				// Start the saving capture output
-				fmt.Printf("→ Saving capture file\n")
-				fmt.Printf("  Saving to %s...\n", outputFile)
+				out.Print("→ Saving capture file\n")
+				out.Print("  Saving to %s...\n", outputFile)
 				outputMutex.Unlock()
 				
 				// Small delay to simulate download progress
@@ -251,9 +253,9 @@ func CapturePacketsFromResource(client *k8s.Client, namespace, resourceName, con
 				
 				// Show success with file details
 				outputMutex.Lock()
-				fmt.Printf("  Packet capture downloaded: %s (%d bytes)\n", outputFile, fileSize)
-				fmt.Printf("  ✓ Done\n")
-				fmt.Printf("  ✓ Successfully captured from pod %s\n", cli.Colorize(cli.ColorBold, podName))
+				out.Print("  Packet capture downloaded: %s (%d bytes)\n", outputFile, fileSize)
+				out.Print("  ✓ Done\n")
+				out.Print("  ✓ Successfully captured from pod %s\n", out.(*outpkg.ConsoleWriter).FormatBold( podName))
 				outputMutex.Unlock()
 				
 				// Get file size information
@@ -276,7 +278,7 @@ func CapturePacketsFromResource(client *k8s.Client, namespace, resourceName, con
 						}
 					
 						outputMutex.Lock()
-						fmt.Printf("    Captured %.2f %s to %s\n", size, unit, outputFile)
+						out.Print("    Captured %.2f %s to %s\n", size, unit, outputFile)
 						outputMutex.Unlock()
 					}
 				}
@@ -290,7 +292,8 @@ func CapturePacketsFromResource(client *k8s.Client, namespace, resourceName, con
 	}
 	
 	// Step 3: Capturing packets
-	fmt.Println(cli.Step(3, "Capturing network packets"))
+	out.Step(3, "Capturing network packets")
+	out.Println()
 	
 	// Set up signal handling for graceful termination
 	signalChan := make(chan os.Signal, 1)
@@ -299,13 +302,13 @@ func CapturePacketsFromResource(client *k8s.Client, namespace, resourceName, con
 	// Handle manual interruption with Ctrl+C
 	go func() {
 		<-signalChan
-		fmt.Println(cli.Warning("\nInterrupt received, stopping captures..."))
+		out.Warning("\nInterrupt received, stopping captures...")
 		// We don't actually have a way to cancel in-progress captures
 		// but acknowledging the interrupt is helpful for UX
 	}()
 	
 	// Start capturing packets with a spinner to show progress
-	fmt.Printf("  %s\n", cli.Info("Capturing packets from all pods..."))
+	out.Info("  Capturing packets from all pods...")
 	
 	// Show capture duration as simple text, will be followed by progress bar
 	if duration > 0 {
@@ -315,8 +318,8 @@ func CapturePacketsFromResource(client *k8s.Client, namespace, resourceName, con
 		
 		// Simple highlight for progress information
 		fmt.Println()
-		fmt.Printf("  %s\n", cli.Colorize(cli.ColorBold+cli.ColorYellow, "CAPTURE DURATION: "+duration.String()))
-		fmt.Printf("  %s\n", cli.Colorize(cli.ColorBlue, "End Time: "+endTimeStr))
+		out.Print("  %s\n", out.(*outpkg.ConsoleWriter).FormatHighlight( "CAPTURE DURATION: "+duration.String()))
+		out.Print("  %s\n", out.(*outpkg.ConsoleWriter).Colorize(outpkg.ColorBlue, "End Time: "+endTimeStr))
 		fmt.Println()
 		fmt.Println("  Progress bar will appear below:")
 	}
@@ -416,7 +419,7 @@ func CapturePacketsFromResource(client *k8s.Client, namespace, resourceName, con
 		go func() {
 			defer spinnerWg.Done()
 			time.Sleep(2 * time.Second)
-			fmt.Printf("  %s to stop the capture\n", cli.Colorize(cli.ColorYellow, "Press Ctrl+C"))
+			out.Print("  %s to stop the capture\n", out.(*outpkg.ConsoleWriter).Colorize(outpkg.ColorYellow, "Press Ctrl+C"))
 			
 			// Just wait for completion
 			for {
@@ -424,7 +427,7 @@ func CapturePacketsFromResource(client *k8s.Client, namespace, resourceName, con
 				case <-captureDone:
 					activeCaptures--
 					if activeCaptures <= 0 {
-						fmt.Printf("  %s All captures completed!\n", cli.Colorize(cli.ColorGreen, "✓"))
+						out.Print("  %s All captures completed!\n", out.(*outpkg.ConsoleWriter).Colorize(outpkg.ColorGreen, "✓"))
 						return
 					}
 				}
@@ -443,7 +446,7 @@ func CapturePacketsFromResource(client *k8s.Client, namespace, resourceName, con
 	time.Sleep(200 * time.Millisecond) // Give the terminal a moment to redraw
 	
 	// Step 4: Show results
-	fmt.Println(cli.Step(4, "Results summary"))
+	out.Step(4, "Results summary")
 	
 	// Count successful and failed pods
 	successCount := 0
@@ -460,41 +463,41 @@ func CapturePacketsFromResource(client *k8s.Client, namespace, resourceName, con
 	}
 	
 	// Display overall statistics
-	fmt.Printf("  %s: %s\n", 
-		cli.Colorize(cli.ColorBlue, "Total captures"), 
-		cli.Colorize(cli.ColorBold, fmt.Sprintf("%d", len(results))))
-	fmt.Printf("  %s: %s\n", 
-		cli.Colorize(cli.ColorBlue, "Successful captures"), 
-		cli.Colorize(cli.ColorBold, fmt.Sprintf("%d", successCount)))
+	out.Print("  %s: %s\n", 
+		out.(*outpkg.ConsoleWriter).Colorize(outpkg.ColorBlue, "Total captures"), 
+		out.(*outpkg.ConsoleWriter).FormatBold( fmt.Sprintf("%d", len(results))))
+	out.Print("  %s: %s\n", 
+		out.(*outpkg.ConsoleWriter).Colorize(outpkg.ColorBlue, "Successful captures"), 
+		out.(*outpkg.ConsoleWriter).FormatBold( fmt.Sprintf("%d", successCount)))
 	if failedCount > 0 {
-		fmt.Printf("  %s: %s\n", 
-			cli.Colorize(cli.ColorRed, "Failed captures"), 
-			cli.Colorize(cli.ColorBold, fmt.Sprintf("%d", failedCount)))
+		out.Print("  %s: %s\n", 
+			out.(*outpkg.ConsoleWriter).Colorize(outpkg.ColorRed, "Failed captures"), 
+			out.(*outpkg.ConsoleWriter).FormatBold( fmt.Sprintf("%d", failedCount)))
 	}
-	fmt.Printf("  %s: %s\n", 
-		cli.Colorize(cli.ColorBlue, "Total captured data"), 
-		cli.Colorize(cli.ColorBold, formatBytes(totalBytes)))
+	out.Print("  %s: %s\n", 
+		out.(*outpkg.ConsoleWriter).Colorize(outpkg.ColorBlue, "Total captured data"), 
+		out.(*outpkg.ConsoleWriter).FormatBold( formatBytesMulti(totalBytes)))
 	
 	// Display individual results
-	fmt.Println("  Capture details:")
+	out.Println("  Capture details:")
 	for i, result := range results {
 		if result.Success {
-			fmt.Printf("    %d. %s: %s (%s)\n", 
+			out.Print("    %d. %s: %s (%s)\n", 
 				i+1,
-				cli.Colorize(cli.ColorBold, result.PodName),
-				cli.Success("Success"),
-				formatBytes(result.CapturedBytes))
+				out.(*outpkg.ConsoleWriter).FormatBold( result.PodName),
+				out.(*outpkg.ConsoleWriter).Colorize(outpkg.ColorGreen, "Success"),
+				formatBytesMulti(result.CapturedBytes))
 		} else {
-			fmt.Printf("    %d. %s: %s - %v\n", 
+			out.Print("    %d. %s: %s - %v\n", 
 				i+1,
-				cli.Colorize(cli.ColorBold, result.PodName),
-				cli.Colorize(cli.ColorRed, "Failed"),
+				out.(*outpkg.ConsoleWriter).FormatBold( result.PodName),
+				out.(*outpkg.ConsoleWriter).Colorize(outpkg.ColorRed, "Failed"),
 				result.Error)
 		}
 	}
 
 	// Final message
-	fmt.Printf("\nResource capture completed: %d of %d pods captured successfully\n", 
+	out.Print("\nResource capture completed: %d of %d pods captured successfully\n", 
 		successCount, len(resourceInfo.PodNames))
 	
 	if successCount == 0 {
@@ -556,7 +559,7 @@ func captureSinglePod(client *k8s.Client, namespace, podName, containerName,
 }
 
 // formatBytes formats a byte count in a human-readable form
-func formatBytes(bytes int) string {
+func formatBytesMulti(bytes int) string {
 	if bytes < 1024 {
 		return fmt.Sprintf("%d B", bytes)
 	} else if bytes < 1024*1024 {

@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/p404/kube-packet-replay/pkg/cli"
 	"github.com/p404/kube-packet-replay/pkg/k8s"
+	outpkg "github.com/p404/kube-packet-replay/pkg/output"
 )
 
 // ReplayResult represents the result of replaying packets to a single pod
@@ -27,13 +27,14 @@ func ReplayPacketsToResource(client *k8s.Client, namespace, resourceName, contai
 	inputFile string, opts *ReplayOptions) error {
 	
 	// Show starting message with date
+	out := outpkg.Default()
 	currentTime := time.Now().Format("2006-01-02 15:04:05")
-	fmt.Printf("\n%s %s\n\n", 
-		cli.Colorize(cli.ColorBold, "KUBE-PACKET-REPLAY RESOURCE REPLAY STARTED AT:"), 
-		cli.Colorize(cli.ColorBlue, currentTime))
+	out.Print("\n%s %s\n\n", 
+		outpkg.FormatBold("KUBE-PACKET-REPLAY RESOURCE REPLAY STARTED AT:"), 
+		outpkg.Colorize(outpkg.ColorBlue, currentTime))
 	
 	// Step 1: Discover resource and pods
-	fmt.Println(cli.Step(1, "Discovering Kubernetes resources"))
+	out.Step(1, "Discovering Kubernetes resources")
 
 	// Find the resource and its associated pods
 	resourceInfo, err := client.GetPodsFromResource(namespace, resourceName)
@@ -48,23 +49,23 @@ func ReplayPacketsToResource(client *k8s.Client, namespace, resourceName, contai
 	}
 	
 	// Display resource information
-	fmt.Printf("  %s: %s\n", 
-		cli.Colorize(cli.ColorBlue, "Resource Type"), 
-		cli.Colorize(cli.ColorBold, string(resourceInfo.Type)))
-	fmt.Printf("  %s: %s\n", 
-		cli.Colorize(cli.ColorBlue, "Resource Name"), 
-		cli.Colorize(cli.ColorBold, resourceInfo.Name))
-	fmt.Printf("  %s: %s\n", 
-		cli.Colorize(cli.ColorBlue, "Namespace"), 
-		cli.Colorize(cli.ColorBold, namespace))
-	fmt.Printf("  %s: %s\n", 
-		cli.Colorize(cli.ColorBlue, "Pods Found"), 
-		cli.Colorize(cli.ColorBold, fmt.Sprintf("%d", len(resourceInfo.PodNames))))
+	out.Print("  %s: %s\n", 
+		outpkg.Colorize(outpkg.ColorBlue, "Resource Type"), 
+		outpkg.FormatBold( string(resourceInfo.Type)))
+	out.Print("  %s: %s\n", 
+		outpkg.Colorize(outpkg.ColorBlue, "Resource Name"), 
+		outpkg.FormatBold( resourceInfo.Name))
+	out.Print("  %s: %s\n", 
+		outpkg.Colorize(outpkg.ColorBlue, "Namespace"), 
+		outpkg.FormatBold( namespace))
+	out.Print("  %s: %s\n", 
+		outpkg.Colorize(outpkg.ColorBlue, "Pods Found"), 
+		outpkg.FormatBold( fmt.Sprintf("%d", len(resourceInfo.PodNames))))
 	
 	// List the pods
-	fmt.Printf("  %s:\n", cli.Colorize(cli.ColorBlue, "Target Pods"))
+	out.Print("  %s:\n", outpkg.Colorize(outpkg.ColorBlue, "Target Pods"))
 	for i, podName := range resourceInfo.PodNames {
-		fmt.Printf("    %d. %s\n", i+1, cli.Colorize(cli.ColorBold, podName))
+		out.Print("    %d. %s\n", i+1, outpkg.FormatBold( podName))
 	}
 
 	// Get file information for user feedback
@@ -77,15 +78,15 @@ func ReplayPacketsToResource(client *k8s.Client, namespace, resourceName, contai
 	}
 	
 	// Display file information
-	fmt.Printf("  %s: %s\n", 
-		cli.Colorize(cli.ColorBlue, "Source file"),
-		cli.Colorize(cli.ColorBold, inputFile))
-	fmt.Printf("  %s: %s\n", 
-		cli.Colorize(cli.ColorBlue, "File size"), 
-		cli.Colorize(cli.ColorBold, fmt.Sprintf("%d bytes", fileStat.Size())))
+	out.Print("  %s: %s\n", 
+		outpkg.Colorize(outpkg.ColorBlue, "Source file"),
+		outpkg.FormatBold( inputFile))
+	out.Print("  %s: %s\n", 
+		outpkg.Colorize(outpkg.ColorBlue, "File size"), 
+		outpkg.FormatBold( fmt.Sprintf("%d bytes", fileStat.Size())))
 
 	// Step 2: Set up replay for each pod
-	fmt.Println(cli.Step(2, "Setting up packet replay for pods"))
+	out.Step(2, "Setting up packet replay for pods")
 	
 	// Create a WaitGroup to wait for all replays to complete
 	var wg sync.WaitGroup
@@ -100,17 +101,17 @@ func ReplayPacketsToResource(client *k8s.Client, namespace, resourceName, contai
 			// Try to get the default container for this pod
 			defaultContainer, err := client.GetDefaultContainer(namespace, podName)
 			if err != nil {
-				fmt.Printf("  Warning: Failed to get default container for pod %s: %v\n", podName, err)
+				out.Print("  Warning: Failed to get default container for pod %s: %v\n", podName, err)
 				// Just use an empty string - the replay will try to pick a valid container
 			} else {
 				targetContainer = defaultContainer
-				fmt.Printf("  Using default container for pod %s: %s\n", podName, targetContainer)
+				out.Print("  Using default container for pod %s: %s\n", podName, targetContainer)
 			}
 		}
 		
 		// Display replay setup
-		fmt.Printf("  Setting up replay for pod %s\n", cli.Colorize(cli.ColorBold, podName))
-		fmt.Printf("    Container: %s\n", targetContainer)
+		out.Print("  Setting up replay for pod %s\n", outpkg.FormatBold( podName))
+		out.Print("    Container: %s\n", targetContainer)
 		
 		// Add to wait group for concurrent execution
 		wg.Add(1)
@@ -120,7 +121,7 @@ func ReplayPacketsToResource(client *k8s.Client, namespace, resourceName, contai
 			defer wg.Done()
 			
 			// Log that we're starting work on this pod
-			fmt.Printf("  → Starting replay on pod: %s\n", cli.Colorize(cli.ColorBold, podName))
+			out.Print("  → Starting replay on pod: %s\n", outpkg.FormatBold( podName))
 			
 			// Set up the result struct
 			result := ReplayResult{
@@ -154,20 +155,20 @@ func ReplayPacketsToResource(client *k8s.Client, namespace, resourceName, contai
 			// Read captured output
 			capturedOutput := make([]byte, 100000)
 			n, _ := r.Read(capturedOutput)
-			output := string(capturedOutput[:n])
+			capturedStr := string(capturedOutput[:n])
 			
 			// Try to extract statistics
-			packets, bytes := extractReplayStats(output)
+			packets, bytes := extractReplayStats(capturedStr)
 			result.PacketsReplayed = packets
 			result.BytesReplayed = bytes
 			
 			if err != nil {
 				result.Success = false
 				result.Error = err
-				fmt.Printf("  ✗ Error replaying to pod %s: %v\n", cli.Colorize(cli.ColorBold, podName), err)
+				out.Print("  ✗ Error replaying to pod %s: %v\n", outpkg.FormatBold( podName), err)
 			} else {
 				result.Success = true
-				fmt.Printf("  ✓ Successfully replayed to pod %s\n", cli.Colorize(cli.ColorBold, podName))
+				out.Print("  ✓ Successfully replayed to pod %s\n", outpkg.FormatBold( podName))
 			}
 			
 			// Add result to the list
@@ -178,7 +179,7 @@ func ReplayPacketsToResource(client *k8s.Client, namespace, resourceName, contai
 	}
 	
 	// Step 3: Wait for all replays to complete
-	fmt.Println(cli.Step(3, "Replaying packets to all pods"))
+	out.Step(3, "Replaying packets to all pods")
 	
 	// Wait for all replays to complete
 	done := make(chan struct{})
@@ -188,23 +189,24 @@ func ReplayPacketsToResource(client *k8s.Client, namespace, resourceName, contai
 	}()
 	
 	// Show a spinner while waiting for replays to complete
+	spinChars := []string{"|", "/", "-", "\\"}
 	ticker := time.NewTicker(200 * time.Millisecond)
 	iteration := 0
 	select {
 	case <-done:
 		ticker.Stop()
-		fmt.Print("\r  All replays completed!                                 \n")
+		out.Print("\r  All replays completed!                                 \n")
 	case <-time.After(1 * time.Second):
 		// Show a spinner only if replays take more than a second
 		for {
 			select {
 			case <-ticker.C:
-				fmt.Printf("\r  Waiting for replays to complete %s ", 
-					cli.Colorize(cli.ColorBlue, cli.LoadingSpinner(iteration)))
+				out.Print("\r  Waiting for replays to complete %s ", 
+					outpkg.Colorize(outpkg.ColorBlue, spinChars[iteration%len(spinChars)]))
 				iteration++
 			case <-done:
 				ticker.Stop()
-				fmt.Print("\r  All replays completed!                                 \n")
+				out.Print("\r  All replays completed!                                 \n")
 				goto exitLoop
 			}
 		}
@@ -212,7 +214,7 @@ func ReplayPacketsToResource(client *k8s.Client, namespace, resourceName, contai
 	}
 	
 	// Step 4: Show results
-	fmt.Println(cli.Step(4, "Results summary"))
+	out.Step(4, "Results summary")
 	
 	// Count successful and failed pods
 	successCount := 0
@@ -225,15 +227,15 @@ func ReplayPacketsToResource(client *k8s.Client, namespace, resourceName, contai
 		}
 	}
 	
-	fmt.Printf("  %s: %s\n", 
-		cli.Colorize(cli.ColorBlue, "Total Pods"), 
-		cli.Colorize(cli.ColorBold, fmt.Sprintf("%d", len(results))))
-	fmt.Printf("  %s: %s\n", 
-		cli.Colorize(cli.ColorBlue, "Successful"), 
-		cli.Colorize(cli.ColorBold, fmt.Sprintf("%d", successCount)))
-	fmt.Printf("  %s: %s\n", 
-		cli.Colorize(cli.ColorBlue, "Failed"), 
-		cli.Colorize(cli.ColorBold, fmt.Sprintf("%d", failedCount)))
+	out.Print("  %s: %s\n", 
+		outpkg.Colorize(outpkg.ColorBlue, "Total Pods"), 
+		outpkg.FormatBold( fmt.Sprintf("%d", len(results))))
+	out.Print("  %s: %s\n", 
+		outpkg.Colorize(outpkg.ColorBlue, "Successful"), 
+		outpkg.FormatBold( fmt.Sprintf("%d", successCount)))
+	out.Print("  %s: %s\n", 
+		outpkg.Colorize(outpkg.ColorBlue, "Failed"), 
+		outpkg.FormatBold( fmt.Sprintf("%d", failedCount)))
 	
 	// Calculate replay statistics
 	totalPackets := 0
@@ -250,54 +252,54 @@ func ReplayPacketsToResource(client *k8s.Client, namespace, resourceName, contai
 	}
 	
 	// Display overall statistics
-	fmt.Printf("  %s: %s\n", 
-		cli.Colorize(cli.ColorBlue, "Total replays"), 
-		cli.Colorize(cli.ColorBold, fmt.Sprintf("%d", len(results))))
-	fmt.Printf("  %s: %s\n", 
-		cli.Colorize(cli.ColorBlue, "Successful replays"), 
-		cli.Colorize(cli.ColorBold, fmt.Sprintf("%d", successCount)))
+	out.Print("  %s: %s\n", 
+		outpkg.Colorize(outpkg.ColorBlue, "Total replays"), 
+		outpkg.FormatBold( fmt.Sprintf("%d", len(results))))
+	out.Print("  %s: %s\n", 
+		outpkg.Colorize(outpkg.ColorBlue, "Successful replays"), 
+		outpkg.FormatBold( fmt.Sprintf("%d", successCount)))
 	if failedCount > 0 {
-		fmt.Printf("  %s: %s\n", 
-			cli.Colorize(cli.ColorRed, "Failed replays"), 
-			cli.Colorize(cli.ColorBold, fmt.Sprintf("%d", failedCount)))
+		out.Print("  %s: %s\n", 
+			outpkg.Colorize(outpkg.ColorRed, "Failed replays"), 
+			outpkg.FormatBold( fmt.Sprintf("%d", failedCount)))
 	}
 	if totalPackets > 0 {
-		fmt.Printf("  %s: %s\n", 
-			cli.Colorize(cli.ColorBlue, "Total packets replayed"), 
-			cli.Colorize(cli.ColorBold, fmt.Sprintf("%d", totalPackets)))
+		out.Print("  %s: %s\n", 
+			outpkg.Colorize(outpkg.ColorBlue, "Total packets replayed"), 
+			outpkg.FormatBold( fmt.Sprintf("%d", totalPackets)))
 	}
 	if totalBytes > 0 {
-		fmt.Printf("  %s: %s\n", 
-			cli.Colorize(cli.ColorBlue, "Total bytes replayed"), 
-			cli.Colorize(cli.ColorBold, formatBytes(totalBytes)))
+		out.Print("  %s: %s\n", 
+			outpkg.Colorize(outpkg.ColorBlue, "Total bytes replayed"), 
+			outpkg.FormatBold( formatBytes(totalBytes)))
 	}
 	
 	// Display individual results
-	fmt.Println("  Replay details:")
+	out.Println("  Replay details:")
 	for i, result := range results {
 		if result.Success {
-			fmt.Printf("    %d. %s: %s", 
+			out.Print("    %d. %s: %s", 
 				i+1,
-				cli.Colorize(cli.ColorBold, result.PodName),
-				cli.Success("Success"))
+				outpkg.FormatBold( result.PodName),
+				outpkg.Colorize(outpkg.ColorGreen, "Success"))
 			
 			if result.PacketsReplayed > 0 {
-				fmt.Printf(" (%d packets, %s)", 
+				out.Print(" (%d packets, %s)", 
 					result.PacketsReplayed, 
 					formatBytes(result.BytesReplayed))
 			}
-			fmt.Println()
+			out.Println()
 		} else {
-			fmt.Printf("    %d. %s: %s - %v\n", 
+			out.Print("    %d. %s: %s - %v\n", 
 				i+1,
-				cli.Colorize(cli.ColorBold, result.PodName),
-				cli.Colorize(cli.ColorRed, "Failed"),
+				outpkg.FormatBold( result.PodName),
+				outpkg.Colorize(outpkg.ColorRed, "Failed"),
 				result.Error)
 		}
 	}
 
 	// Final message
-	fmt.Printf("\nResource replay completed: %d of %d pods replayed successfully\n", 
+	out.Print("\nResource replay completed: %d of %d pods replayed successfully\n", 
 		successCount, len(resourceInfo.PodNames))
 	
 	if successCount == 0 {
@@ -308,12 +310,12 @@ func ReplayPacketsToResource(client *k8s.Client, namespace, resourceName, contai
 }
 
 // extractReplayStats tries to extract packet and byte counts from tcpreplay output
-func extractReplayStats(output string) (int, int) {
+func extractReplayStats(outputStr string) (int, int) {
 	packets := 0
 	bytes := 0
 	
 	// Look for lines that contain packet and byte statistics
-	lines := strings.Split(output, "\n")
+	lines := strings.Split(outputStr, "\n")
 	for _, line := range lines {
 		if strings.Contains(line, "packets") {
 			// Try to extract packet count

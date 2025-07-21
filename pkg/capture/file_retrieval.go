@@ -7,12 +7,14 @@ import (
 	"strings"
 
 	"github.com/p404/kube-packet-replay/pkg/k8s"
+	outpkg "github.com/p404/kube-packet-replay/pkg/output"
 )
 
 // tryExecCat attempts to get a file using kubectl exec cat
 func tryExecCat(client *k8s.Client, namespace, podName, containerName, filePath string, verbose bool) (string, error) {
 	if verbose {
-		fmt.Printf("Executing: kubectl %s exec -n %s -c %s %s -- cat %s\n",
+		out := outpkg.Default()
+		out.Debug("Executing: kubectl %s exec -n %s -c %s %s -- cat %s",
 			getKubeconfigArg(client), namespace, containerName, podName, filePath)
 	}
 
@@ -34,7 +36,8 @@ func tryKillTcpdump(client *k8s.Client, namespace, podName, containerName string
 		getKubeconfigArg(client), namespace, containerName, podName)
 
 	if verbose {
-		fmt.Printf("Executing: %s\n", killCmd)
+		out := outpkg.Default()
+		out.Debug("Executing: %s", killCmd)
 	}
 
 	cmd := exec.Command("sh", "-c", killCmd)

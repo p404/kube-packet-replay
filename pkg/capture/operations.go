@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/p404/kube-packet-replay/pkg/cli"
 	"github.com/p404/kube-packet-replay/pkg/k8s"
+	outpkg "github.com/p404/kube-packet-replay/pkg/output"
 )
 
 // WaitForCompressedFile waits for the compressed file to be available with progress tracking
@@ -17,10 +17,11 @@ func WaitForCompressedFile(client *k8s.Client, namespace, podName, containerName
 	// First, try to get the raw file size for comparison later
 	rawOutput, err := tryExecCat(client, namespace, podName, containerName, rawCaptureFile, false)
 	var rawSize int
+	out := outpkg.Default()
 	if err == nil {
 		rawSize = len(rawOutput)
 		if verbose {
-			fmt.Printf("  Raw capture file found: %d bytes\n", rawSize)
+			out.Print("  Raw capture file found: %d bytes\n", rawSize)
 		}
 	}
 	
@@ -33,10 +34,7 @@ func WaitForCompressedFile(client *k8s.Client, namespace, podName, containerName
 	maxAttempts := 15
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		if verbose {
-			fmt.Printf("  Checking for compressed file (attempt %d/%d)...\n", attempt, maxAttempts)
-		} else {
-			// Show a simple loading spinner in non-verbose mode
-			fmt.Printf("\r  Processing capture %s ", cli.Colorize(cli.ColorBlue, cli.LoadingSpinner(attempt)))
+			out.Print("  Checking for compressed file (attempt %d/%d)...\n", attempt, maxAttempts)
 		}
 		
 		// Try to get the compressed file
@@ -46,7 +44,7 @@ func WaitForCompressedFile(client *k8s.Client, namespace, podName, containerName
 			compressedSize = len(output)
 			fileSuccess = true
 			if verbose {
-				fmt.Printf("  Successfully retrieved compressed capture file (%d bytes)\n", compressedSize)
+				out.Print("  Successfully retrieved compressed capture file (%d bytes)\n", compressedSize)
 			}
 			
 			// Show compression statistics if we have raw size
@@ -54,8 +52,8 @@ func WaitForCompressedFile(client *k8s.Client, namespace, podName, containerName
 				compressionRatio := float64(compressedSize) / float64(rawSize) * 100
 				spaceReduction := 100.0 - compressionRatio
 				bytesSaved := rawSize - compressedSize
-				fmt.Printf("  %s %d bytes → %d bytes (%.1f%% smaller, saved %d bytes)\n",
-					cli.Colorize(cli.ColorGreen, "Compression:"), 
+				out.Print("  %s %d bytes → %d bytes (%.1f%% smaller, saved %d bytes)\n",
+					outpkg.Colorize(outpkg.ColorGreen, "Compression:"), 
 					rawSize, compressedSize, spaceReduction, bytesSaved)
 			}
 			break
@@ -64,14 +62,14 @@ func WaitForCompressedFile(client *k8s.Client, namespace, podName, containerName
 		// Check if gzip is running
 		if checkGzipRunning(client, namespace, podName, containerName) {
 			if verbose {
-				fmt.Println("  Compression in progress... waiting...")
+				out.Println("  Compression in progress... waiting...")
 			}
 		} else if attempt == maxAttempts/2 && verbose {
 			// Check container logs halfway through to see what's happening
-			fmt.Println("  Checking container logs...")
+			out.Println("  Checking container logs...")
 			logs := getContainerLogs(client, namespace, podName, containerName, 10)
 			if logs != "" {
-				fmt.Printf("  Container log snippets:\n%s\n", logs)
+				out.Print("  Container log snippets:\n%s\n", logs)
 			}
 		}
 		
@@ -79,19 +77,15 @@ func WaitForCompressedFile(client *k8s.Client, namespace, podName, containerName
 		time.Sleep(2 * time.Second)
 	}
 	
-	// Clear the progress line in non-verbose mode
-	if !verbose {
-		fmt.Print("\r  Waiting for container to process capture file...                           \n")
-	}
+	// Progress completed
 
 	// If we couldn't get compressed file but have raw, use that
 	if !fileSuccess && rawSize > 0 {
 		output = rawOutput
 		fileSuccess = true
 		if verbose {
-			fmt.Printf("  Using previously retrieved raw capture data (%d bytes)\n", rawSize)
-			fmt.Printf("  %s Container compression failed or didn't complete\n", 
-				cli.Colorize(cli.ColorYellow, "WARNING:"))
+			out.Print("  Using previously retrieved raw capture data (%d bytes)\n", rawSize)
+			out.Warning("  Container compression failed or didn't complete")
 		}
 	}
 	
@@ -100,12 +94,12 @@ func WaitForCompressedFile(client *k8s.Client, namespace, podName, containerName
 
 // SaveCaptureToFile saves the captured data to a file with proper error handling
 func SaveCaptureToFile(outputFile string, data string, verbose bool) error {
+	out := outpkg.Default()
 	// Ensure directory exists
 	dir := filepath.Dir(outputFile)
 	if dir != "." && dir != "" {
 		if err := os.MkdirAll(dir, 0755); err != nil && verbose {
-			fmt.Printf("  %s Could not create directory %s: %v\n", 
-				cli.Colorize(cli.ColorYellow, "Warning:"), dir, err)
+			out.Warning("  Could not create directory %s: %v", dir, err)
 		}
 	}
 
@@ -114,27 +108,26 @@ func SaveCaptureToFile(outputFile string, data string, verbose bool) error {
 	if err == nil {
 		fileInfo, err := os.Stat(outputFile)
 		if err == nil && verbose {
-			fmt.Printf("  Packet capture written successfully (%d bytes)\n", fileInfo.Size())
+			out.Print("  Packet capture written successfully (%d bytes)\n", fileInfo.Size())
 		}
 		return nil
 	}
 
 	// If saving failed, try fallbacks
 	if verbose {
-		fmt.Printf("  %s Failed to save to %s: %v\n", 
-			cli.Colorize(cli.ColorYellow, "Warning:"), outputFile, err)
+		out.Warning("  Failed to save to %s: %v", outputFile, err)
 	}
 	
 	// Try absolute path
 	absPath, err2 := filepath.Abs(outputFile)
 	if err2 == nil && absPath != outputFile {
 		if verbose {
-			fmt.Printf("  Trying with absolute path: %s\n", absPath)
+			out.Print("  Trying with absolute path: %s\n", absPath)
 		}
 		err = os.WriteFile(absPath, []byte(data), 0644)
 		if err == nil {
 			if verbose {
-				fmt.Printf("  Packet capture saved to %s\n", absPath)
+				out.Print("  Packet capture saved to %s\n", absPath)
 			}
 			return nil
 		}
@@ -145,12 +138,12 @@ func SaveCaptureToFile(outputFile string, data string, verbose bool) error {
 	if err == nil {
 		homeFile := filepath.Join(homeDir, "captured.pcap")
 		if verbose {
-			fmt.Printf("  Trying to save to home directory: %s\n", homeFile)
+			out.Print("  Trying to save to home directory: %s\n", homeFile)
 		}
 		err = os.WriteFile(homeFile, []byte(data), 0644)
 		if err == nil {
 			if verbose {
-				fmt.Printf("  Packet capture saved to %s\n", homeFile)
+				out.Print("  Packet capture saved to %s\n", homeFile)
 			}
 			return nil
 		}
@@ -159,12 +152,12 @@ func SaveCaptureToFile(outputFile string, data string, verbose bool) error {
 	// Last resort, try current directory
 	currentDir := "./captured.pcap"
 	if verbose {
-		fmt.Printf("  Trying to save to current directory: %s\n", currentDir)
+		out.Print("  Trying to save to current directory: %s\n", currentDir)
 	}
 	err = os.WriteFile(currentDir, []byte(data), 0644)
 	if err == nil {
 		if verbose {
-			fmt.Printf("  Packet capture saved to %s\n", currentDir)
+			out.Print("  Packet capture saved to %s\n", currentDir)
 		}
 		return nil
 	}

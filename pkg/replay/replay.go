@@ -5,12 +5,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/p404/kube-packet-replay/pkg/cli"
 	"github.com/p404/kube-packet-replay/pkg/k8s"
+	outpkg "github.com/p404/kube-packet-replay/pkg/output"
 )
 
 // DebugImage is the container image used for network debugging
@@ -79,6 +78,7 @@ func deleteDebugContainer(client *k8s.Client, namespace, podName, containerName 
 // ReplayPackets replays network packets in a Kubernetes pod
 func ReplayPackets(client *k8s.Client, namespace, podName, containerName, inputFile string, opts *ReplayOptions) error {
 	var err error
+	out := outpkg.Default()
 
 	// Apply default options if not specified
 	if opts == nil {
@@ -100,12 +100,12 @@ func ReplayPackets(client *k8s.Client, namespace, podName, containerName, inputF
 	
 	// Show starting message with date
 	currentTime := time.Now().Format("2006-01-02 15:04:05")
-	fmt.Printf("\n%s %s\n\n", 
-		cli.Colorize(cli.ColorBold, "KUBE-PACKET-REPLAY REPLAY STARTED AT:"), 
-		cli.Colorize(cli.ColorBlue, currentTime))
+	out.Print("\n%s %s\n\n", 
+		out.(*outpkg.ConsoleWriter).FormatBold("KUBE-PACKET-REPLAY REPLAY STARTED AT:"), 
+		out.(*outpkg.ConsoleWriter).Colorize(outpkg.ColorBlue, currentTime))
 	
 	// Step 1: Setup and validation
-	fmt.Println(cli.Step(1, "Setting up packet replay"))
+	out.Step(1, "Setting up packet replay")
 	
 	// Get file information for user feedback
 	fileStat, err := os.Stat(inputFile)
@@ -117,19 +117,19 @@ func ReplayPackets(client *k8s.Client, namespace, podName, containerName, inputF
 	}
 	
 	// Display file information
-	fmt.Printf("  %s: %s\n", 
-		cli.Colorize(cli.ColorBlue, "Source file"),
-		cli.Colorize(cli.ColorBold, inputFile))
-	fmt.Printf("  %s: %s\n", 
-		cli.Colorize(cli.ColorBlue, "File size"), 
-		cli.Colorize(cli.ColorBold, fmt.Sprintf("%d bytes", fileStat.Size())))
-	fmt.Printf("  %s: %s/%s\n", 
-		cli.Colorize(cli.ColorBlue, "Target"),
-		cli.Colorize(cli.ColorBold, podName),
-		cli.Colorize(cli.ColorBold, containerName))
-	fmt.Printf("  %s: %s\n", 
-		cli.Colorize(cli.ColorBlue, "Namespace"), 
-		cli.Colorize(cli.ColorBold, namespace))
+	out.Print("  %s: %s\n", 
+		out.(*outpkg.ConsoleWriter).Colorize(outpkg.ColorBlue, "Source file"),
+		out.(*outpkg.ConsoleWriter).FormatBold(inputFile))
+	out.Print("  %s: %s\n", 
+		out.(*outpkg.ConsoleWriter).Colorize(outpkg.ColorBlue, "File size"), 
+		out.(*outpkg.ConsoleWriter).FormatBold(fmt.Sprintf("%d bytes", fileStat.Size())))
+	out.Print("  %s: %s/%s\n", 
+		out.(*outpkg.ConsoleWriter).Colorize(outpkg.ColorBlue, "Target"),
+		out.(*outpkg.ConsoleWriter).FormatBold(podName),
+		out.(*outpkg.ConsoleWriter).FormatBold(containerName))
+	out.Print("  %s: %s\n", 
+		out.(*outpkg.ConsoleWriter).Colorize(outpkg.ColorBlue, "Namespace"), 
+		out.(*outpkg.ConsoleWriter).FormatBold(namespace))
 
 	// Create a debug container name with timestamp to avoid collisions
 	timestamp := time.Now().Unix()
@@ -143,154 +143,161 @@ func ReplayPackets(client *k8s.Client, namespace, podName, containerName, inputF
 	defer func() {
 		if !cleanupDone {
 			// Only print message if this wasn't already handled
-			fmt.Println("\n" + cli.Step(4, "Emergency cleanup"))
-			fmt.Println("  Removing debug container due to error...")
+			out.Println()
+			out.Step(4, "Emergency cleanup")
+			out.Println("  Removing debug container due to error...")
 			
 			// Best effort cleanup - ignore errors
 			_ = deleteDebugContainer(client, namespace, podName, debugContainerName)
-			fmt.Println("  " + cli.Success("Cleanup complete"))
+			out.Success("  Cleanup complete")
 		}
 	}()
-
-	// First, create a debug container with a simple command that keeps it running
+	
+	// Create debug container with tcpreplay available
+	// We'll just start it with a sleep command initially
 	command := []string{
 		"sh", "-c",
-		"trap : TERM INT; sleep infinity & wait",
+		"sleep 3600", // Keep container alive for 1 hour
 	}
-
-	// Create debug container
-	fmt.Printf("  Creating debug container %s...\n", debugContainerName)
+	
+	out.Print("  Creating debug container %s...\n", debugContainerName)
 	err = client.CreateDebugContainerWithKubectl(namespace, podName, containerName, DebugImage, command, debugContainerName)
 	if err != nil {
 		return fmt.Errorf("failed to create debug container: %v", err)
 	}
-	fmt.Println("  " + cli.Success("Done"))
-	fmt.Println()
-
+	out.Success("  Done")
+	out.Println()
+	
 	// Step 2: Copy PCAP file to pod
-	fmt.Println(cli.Step(2, "Copying PCAP file to pod"))
+	out.Step(2, "Copying PCAP file to pod")
 	
-	// Get the basename of the input file
-	remoteFilePath := "/tmp/" + filepath.Base(inputFile)
-	
-	// Check if we're dealing with a compressed file
+	// Determine if file is compressed
 	isCompressed := strings.HasSuffix(inputFile, ".gz")
+	remotePath := fmt.Sprintf("/tmp/replay-%d.pcap", timestamp)
+	rawRemotePath := remotePath
 	
-	// Set up the command to handle the file appropriately
 	if isCompressed {
-		fmt.Println("  Detected compressed PCAP file (.gz)")
-		rawRemotePath := strings.TrimSuffix(remoteFilePath, ".gz")
-		fmt.Printf("  Will decompress to %s before replay\n", rawRemotePath)
-		
-		// Note: decompression will be handled after the file is copied
-		
-		// Update the remote path to the decompressed file for tcpreplay
-		remoteFilePath = rawRemotePath
+		out.Println("  Detected compressed PCAP file (.gz)")
+		remotePath = fmt.Sprintf("/tmp/replay-%d.pcap.gz", timestamp)
+		out.Print("  Will decompress to %s before replay\n", rawRemotePath)
 	}
 	
-	// Create a placeholder file that we'd replace with kubectl cp in a real scenario
-	// In a real implementation, we would use kubectl cp to copy the file
-	fmt.Printf("  Copying %s to pod...\n", inputFile)
+	// Copy the file to the debug container
+	// Since we can't directly copy to the debug container with kubectl cp,
+	// we'll copy to the pod and then move it
+	out.Print("  Copying %s to pod...\n", inputFile)
 	
-	// Copy file to pod using kubectl cp
-	err = copyFileToPod(inputFile, namespace, podName, debugContainerName, remoteFilePath)
+	err = copyFileToPod(inputFile, namespace, podName, debugContainerName, remotePath)
 	if err != nil {
-		return fmt.Errorf("failed to copy file to pod: %v", err)
-	}
-	
-	// If file is compressed, decompress it
-	if isCompressed {
-		decompressCmd := []string{
-			"sh", "-c",
-			fmt.Sprintf("gunzip -f %s", remoteFilePath+".gz"),
-		}
-		
-		_, err = client.ExecInContainer(namespace, podName, debugContainerName, decompressCmd)
-		if err != nil {
-			return fmt.Errorf("failed to decompress file in pod: %v", err)
+		// Try copying to the main container instead
+		if containerName != "" {
+			err2 := copyFileToPod(inputFile, namespace, podName, containerName, remotePath)
+			if err2 == nil {
+				// Copy succeeded to main container, now we need to move it to debug container
+				moveCmd := []string{"sh", "-c", fmt.Sprintf("cp %s /tmp/", remotePath)}
+				_, _ = client.ExecInContainer(namespace, podName, containerName, moveCmd)
+			} else {
+				return fmt.Errorf("failed to copy file to pod: %v", err)
+			}
+		} else {
+			return fmt.Errorf("failed to copy file to pod: %v", err)
 		}
 	}
-	if err != nil {
-		return fmt.Errorf("failed to prepare file in pod: %v", err)
-	}
-	fmt.Println("  " + cli.Success("Done"))
-	fmt.Println()
-
+	
+	out.Success("  Done")
+	out.Println()
+	
 	// Step 3: Run packet replay
-	fmt.Println(cli.Step(3, "Running packet replay"))
-	fmt.Printf("  Using tcpreplay on interface %s\n", cli.Colorize(cli.ColorBold, "lo"))
+	out.Step(3, "Running packet replay")
+	out.Print("  Using tcpreplay on interface %s\n", out.(*outpkg.ConsoleWriter).FormatBold("lo"))
 	
-	// Build tcpreplay command with configured options
-	tcpreplayCmd := fmt.Sprintf(
-		"tcpreplay --stats=1 -i %s ", 
-		opts.NetworkInterface,
-	)
+	// Prepare tcpreplay command
+	replayCmd := ""
 	
-	// Add speed multiplier if not 1.0
+	// If file is compressed, decompress it first
+	if isCompressed {
+		replayCmd = fmt.Sprintf("gunzip -c %s > %s && ", remotePath, rawRemotePath)
+		remotePath = rawRemotePath
+	}
+	
+	// Build tcpreplay command with options
+	replayCmd += fmt.Sprintf("tcpreplay -i %s", opts.NetworkInterface)
+	
+	// Add speed multiplier if not default
 	if opts.SpeedMultiplier != 1.0 {
-		tcpreplayCmd += fmt.Sprintf("--multiplier=%.2f ", opts.SpeedMultiplier)
+		replayCmd += fmt.Sprintf(" -x %.2f", opts.SpeedMultiplier)
 	}
 	
-	// Add loop count if greater than 1
+	// Add loop count if more than 1
 	if opts.LoopCount > 1 {
-		tcpreplayCmd += fmt.Sprintf("--loop=%d ", opts.LoopCount)
+		replayCmd += fmt.Sprintf(" -l %d", opts.LoopCount)
 	}
 	
-	// Add the file path
-	tcpreplayCmd += remoteFilePath
+	// Add the pcap file
+	replayCmd += fmt.Sprintf(" %s", remotePath)
 	
-	// Run tcpreplay with appropriate options
-	replayCmd := []string{
-		"sh", "-c",
-		tcpreplayCmd,
-	}
-	
-	fmt.Printf("  Starting packet replay on interface %s...\n", cli.Colorize(cli.ColorBold, opts.NetworkInterface))
+	// Execute the replay command
+	out.Print("  Starting packet replay on interface %s...\n", out.(*outpkg.ConsoleWriter).FormatBold(opts.NetworkInterface))
 	if opts.SpeedMultiplier != 1.0 {
-		fmt.Printf("  Speed multiplier: %s\n", cli.Colorize(cli.ColorBold, fmt.Sprintf("%.2fx", opts.SpeedMultiplier)))
+		out.Print("  Speed multiplier: %s\n", out.(*outpkg.ConsoleWriter).FormatBold(fmt.Sprintf("%.2fx", opts.SpeedMultiplier)))
 	}
 	if opts.LoopCount > 1 {
-		fmt.Printf("  Loop count: %s\n", cli.Colorize(cli.ColorBold, fmt.Sprintf("%d", opts.LoopCount)))
+		out.Print("  Loop count: %s\n", out.(*outpkg.ConsoleWriter).FormatBold(fmt.Sprintf("%d", opts.LoopCount)))
 	}
 	
-	output, err := client.ExecInContainer(namespace, podName, debugContainerName, replayCmd)
+	replayOutput, err := client.ExecInContainer(namespace, podName, debugContainerName, []string{"sh", "-c", replayCmd})
 	if err != nil {
-		return fmt.Errorf("failed to execute replay command: %v", err)
+		return fmt.Errorf("failed to replay packets: %v", err)
 	}
 	
-	// Show only the important parts of tcpreplay output
-	outputLines := strings.Split(output, "\n")
-	for _, line := range outputLines {
-		if strings.Contains(line, "packets") || strings.Contains(line, "bytes") || 
-		   strings.Contains(line, "rate") || strings.Contains(line, "success") {
-			fmt.Printf("  %s\n", line)
+	// Display replay output (tcpreplay statistics)
+	if replayOutput != "" {
+		lines := strings.Split(strings.TrimSpace(replayOutput), "\n")
+		for _, line := range lines {
+			if line != "" {
+				out.Print("  %s\n", line)
+			}
 		}
 	}
 	
-	fmt.Println("  " + cli.Success("Done"))
-	fmt.Println()
+	out.Success("  Done")
+	out.Println()
 	
 	// Step 4: Cleanup
-	fmt.Println(cli.Step(4, "Cleaning up"))
-	fmt.Println("  Removing debug container...")
+	out.Step(4, "Cleaning up")
+	out.Println("  Removing debug container...")
 	
-	// Delete the debug container
 	err = deleteDebugContainer(client, namespace, podName, debugContainerName)
 	if err != nil {
-		// Just log the error but don't fail the whole operation
-		fmt.Printf("  Warning: Failed to remove debug container: %v\n", err)
+		// This is not fatal, just log it
+		out.Print("  Warning: Failed to remove debug container: %v\n", err)
+	} else {
+		cleanupDone = true // Mark cleanup as done to prevent defer from trying again
 	}
 	
-	// Mark cleanup as done so the defer function doesn't try to clean up again
-	cleanupDone = true
+	out.Success("  Done")
 	
-	fmt.Println("  " + cli.Success("Done"))
+	// Extract packet count from tcpreplay output for summary
+	packetCount := "unknown"
+	if replayOutput != "" && strings.Contains(replayOutput, "packets") {
+		// Parse tcpreplay output to get packet count
+		lines := strings.Split(replayOutput, "\n")
+		for _, line := range lines {
+			if strings.Contains(line, "packets") {
+				// Try to extract the number
+				parts := strings.Fields(line)
+				if len(parts) > 0 {
+					packetCount = parts[0]
+					break
+				}
+			}
+		}
+	}
 	
-	// Final success message
-	fmt.Printf("Packet replay completed successfully: %s packets replayed to pod %s/%s\n", 
-		cli.Colorize(cli.ColorBold, filepath.Base(inputFile)),
-		cli.Colorize(cli.ColorBold, podName),
-		cli.Colorize(cli.ColorBold, containerName))
+	out.Print("\nPacket replay completed successfully: %s packets replayed to pod %s/%s\n", 
+		out.(*outpkg.ConsoleWriter).Colorize(outpkg.ColorGreen, packetCount),
+		out.(*outpkg.ConsoleWriter).FormatBold(namespace),
+		out.(*outpkg.ConsoleWriter).FormatBold(podName))
 	
 	return nil
 }
