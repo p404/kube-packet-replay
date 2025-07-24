@@ -321,7 +321,6 @@ func CapturePacketsFromResource(client *k8s.Client, namespace, resourceName, con
 		out.Print("  %s\n", out.(*outpkg.ConsoleWriter).FormatHighlight( "CAPTURE DURATION: "+duration.String()))
 		out.Print("  %s\n", out.(*outpkg.ConsoleWriter).Colorize(outpkg.ColorBlue, "End Time: "+endTimeStr))
 		fmt.Println()
-		fmt.Println("  Progress bar will appear below:")
 	}
 	
 	// Track active captures
@@ -348,6 +347,10 @@ func CapturePacketsFromResource(client *k8s.Client, namespace, resourceName, con
 			// Announce the countdown start - this will definitely be visible
 			logf("\n  CAPTURE PROGRESS (DURATION: %s)\n", duration.String())
 			logf("  ----------------------------------------\n")
+			
+			// Start a spinner to show capture is in progress
+			spinner := out.StartSpinner("Capturing network packets...")
+			defer out.StopSpinner(spinner)
 			
 			// Use a simple 5-second ticker
 			ticker := time.NewTicker(5 * time.Second)
@@ -408,6 +411,7 @@ func CapturePacketsFromResource(client *k8s.Client, namespace, resourceName, con
 				case <-captureDone:
 					activeCaptures--
 					if activeCaptures <= 0 {
+						out.StopSpinner(spinner)
 						logf("\n  ✅ CAPTURE COMPLETED!\n")
 						return
 					}
@@ -415,11 +419,15 @@ func CapturePacketsFromResource(client *k8s.Client, namespace, resourceName, con
 			}
 		}()
 	} else {
-		// For non-timed captures, just show Ctrl+C message
+		// For non-timed captures, show Ctrl+C message and a spinner
 		go func() {
 			defer spinnerWg.Done()
 			time.Sleep(2 * time.Second)
 			out.Print("  %s to stop the capture\n", out.(*outpkg.ConsoleWriter).Colorize(outpkg.ColorYellow, "Press Ctrl+C"))
+			
+			// Start a spinner to show capture is in progress
+			spinner := out.StartSpinner("Capturing network packets...")
+			defer out.StopSpinner(spinner)
 			
 			// Just wait for completion
 			for {
@@ -427,6 +435,7 @@ func CapturePacketsFromResource(client *k8s.Client, namespace, resourceName, con
 				case <-captureDone:
 					activeCaptures--
 					if activeCaptures <= 0 {
+						out.StopSpinner(spinner)
 						out.Print("  %s All captures completed!\n", out.(*outpkg.ConsoleWriter).Colorize(outpkg.ColorGreen, "✓"))
 						return
 					}

@@ -1,4 +1,31 @@
+# Capture files
 *.pcap
 *.pcap.gz
+
+# OS specific
 .DS_Store
+Thumbs.db
+
+# Binary
 kube-packet-replay
+
+# Build directories
+build/
+dist/
+
+# Test coverage
+coverage.out
+coverage.html
+*.test
+
+# IDE specific
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Go specific
+vendor/
+go.work
+go.work.sum
