@@ -22,7 +22,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
     -o kube-packet-replay .
 
 # Final stage
-FROM alpine:3.20
+FROM alpine:3.23
 
 # Install runtime dependencies
 RUN apk add --no-cache ca-certificates
