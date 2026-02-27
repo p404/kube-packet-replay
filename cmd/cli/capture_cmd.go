@@ -17,39 +17,22 @@ import (
 // NewCaptureCommand creates the capture command
 func NewCaptureCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "capture [protocol-filter] {pod|deployment|statefulset|daemonset} [resource-name]",
-		Short: "Capture network packets from a Kubernetes pod or higher-level resource",
-		Long: `Capture network packets from a Kubernetes pod or higher-level resource using ephemeral containers.
+		Use:   "capture [filter] {pod|deployment|statefulset|daemonset} [resource-name]",
+		Short: "Capture network packets from a Kubernetes resource",
+		Long: `Capture network packets using ephemeral containers. The filter uses standard tcpdump
+syntax (e.g. "tcp port 80", "udp", "host 10.0.0.1"). For higher-level resources like
+deployments, packets are captured from all associated pods.`,
+		Example: `  # Capture HTTP traffic from a deployment
+  kube-packet-replay capture "tcp port 80" deployment nginx
 
-The protocol-filter can be any valid tcpdump filter expression. You can filter by protocol, port, IP address, or combine them.
+  # Capture all UDP from a specific container in a pod
+  kube-packet-replay capture udp pod mypod --target-container=nginx
 
-You must specify the resource type followed by the resource name. For example:
-  - pod: to target a single pod, e.g. 'pod my-pod-name'
-  - deployment: to target all pods in a deployment, e.g. 'deployment nginx'
-  - statefulset: to target all pods in a statefulset, e.g. 'statefulset postgres'
-  - daemonset: to target all pods in a daemonset, e.g. 'daemonset monitoring-agent'
+  # Capture for 30 seconds and save to a custom file
+  kube-packet-replay capture "tcp port 443" pod web -d 30s -o web-traffic.pcap.gz
 
-When using a higher-level resource type (deployment, statefulset, etc.), the tool will
-capture packets from all associated pods.
-
-Examples:
-  - kube-packet-replay capture "tcp port 80" deployment nginx         # Capture from all pods in a deployment
-  - kube-packet-replay capture udp pod mypod --target-container=nginx # Capture UDP from a specific container in a pod
-  - kube-packet-replay capture icmp statefulset postgres            # Capture ICMP from all pods in a statefulset
-  - kube-packet-replay capture "host 10.0.0.1" daemonset monitoring # Capture from all pods in a daemonset
-
-Common protocol filters include:
-  - tcp           # Capture all TCP traffic
-  - udp           # Capture all UDP traffic
-  - icmp          # Capture ICMP (ping) traffic
-  - udp 8125      # Capture all UDP traffic on port 8125
-  - tcp 80        # Capture all TCP traffic on port 80
-  - port 53       # Capture all traffic on port 53 (any protocol)
-  - host 10.0.0.1 # Capture all traffic to/from 10.0.0.1
-
-You can combine filters, e.g.:
-  - tcp port 80 or tcp port 443
-  - udp and not port 53`,
+  # Capture from all pods in a statefulset
+  kube-packet-replay capture icmp statefulset postgres -n database`,
 		Args: cobra.ExactArgs(3),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			out := output.Default()

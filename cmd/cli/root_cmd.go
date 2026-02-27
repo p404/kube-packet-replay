@@ -30,19 +30,17 @@ func SetVersionInfo(v, c, d string) {
 func NewRootCommand() *cobra.Command {
 	rootCmd := &cobra.Command{
 		Use:   "kube-packet-replay",
-		Short: "Capture and replay network packets in Kubernetes pods and higher-level resources",
-		Long: `kube-packet-replay is a tool that leverages ephemeral containers
-to capture and replay network traffic in Kubernetes pods and higher-level resources.
+		Short: "Capture and replay network packets in Kubernetes pods",
+		Long: `Capture and replay network traffic in Kubernetes pods using ephemeral containers.
+Works with pods, deployments, statefulsets, and daemonsets — no sidecars or restarts needed.`,
+		Example: `  # Capture TCP traffic on port 80 from a deployment
+  kube-packet-replay capture "tcp port 80" deployment nginx
 
-Key Features:
-  - Works with pods, deployments, statefulsets, and daemonsets
-  - Automatic resource type detection - just provide the resource name
-  - Multi-pod capture and replay for higher-level resources
-  - Configurable packet filters using standard tcpdump syntax
-  - Compressed packet capture files
-  - Detailed, color-coded output
+  # Replay the captured traffic back into the pod
+  kube-packet-replay replay pod nginx -f nginx.pcap.gz
 
-It can be used for debugging, testing, and troubleshooting network issues.`,
+  # Capture with a duration limit and custom namespace
+  kube-packet-replay capture "udp port 53" pod coredns -n kube-system -d 30s`,
 	}
 
 	// Add subcommands

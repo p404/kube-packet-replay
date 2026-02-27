@@ -15,28 +15,20 @@ import (
 func NewReplayCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "replay {pod|deployment|statefulset|daemonset} [resource-name] -f [pcap-file]",
-		Short: "Replay packets into Kubernetes pods or higher-level resources",
-		Long: `Replay network packets from a PCAP file into Kubernetes pods or higher-level resources using ephemeral containers.
+		Short: "Replay captured packets into a Kubernetes resource",
+		Long: `Replay network packets from a PCAP file using ephemeral containers. For higher-level
+resources like deployments, packets are replayed to all associated pods.`,
+		Example: `  # Replay captured traffic into a pod
+  kube-packet-replay replay pod nginx -f captured.pcap.gz
 
-You must specify the resource type followed by the resource name. For example:
-  - pod: to target a single pod, e.g. 'pod my-pod-name'
-  - deployment: to target all pods in a deployment, e.g. 'deployment nginx'
-  - statefulset: to target all pods in a statefulset, e.g. 'statefulset postgres'
-  - daemonset: to target all pods in a daemonset, e.g. 'daemonset monitoring-agent'
+  # Replay into all pods of a deployment at 2x speed
+  kube-packet-replay replay deployment nginx -f captured.pcap.gz -s 2.0
 
-When using a higher-level resource type (deployment, statefulset, etc.), the tool will
-replay packets to all associated pods.
+  # Replay 5 times on a specific interface
+  kube-packet-replay replay pod nginx -f captured.pcap.gz -l 5 -i eth0
 
-Examples:
-  - kube-packet-replay replay pod nginx -n default -f captured.pcap                     # Replay in a single pod
-  - kube-packet-replay replay pod nginx --target-container=app -n default -f captured.pcap    # Replay in specific container
-  - kube-packet-replay replay deployment nginx -n default -f captured.pcap              # Replay in all pods of a deployment
-  - kube-packet-replay replay statefulset postgres -n default -f captured.pcap          # Replay in all pods of a statefulset
-
-You can also configure replay options using the following flags:
-  - --interface: Specify which network interface to replay packets on (default: lo)
-  - --speed: Control replay speed multiplier (default: 1.0 = original speed)
-  - --loop: Specify how many times to replay the capture (default: 1)`,
+  # Replay into a specific container
+  kube-packet-replay replay pod nginx --target-container=app -f captured.pcap.gz`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			out := output.Default()
