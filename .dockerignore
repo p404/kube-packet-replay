@@ -1,0 +1,32 @@
+# Git files
+.git/
+.gitignore
+
+# Build artifacts
+build/
+dist/
+*.pcap
+*.pcap.gz
+
+# Documentation
+*.md
+docs/
+
+# Test files
+*_test.go
+coverage.out
+coverage.html
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp

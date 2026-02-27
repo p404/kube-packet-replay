@@ -1,10 +1,10 @@
 package k8s
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 
-	"github.com/spf13/cobra"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -13,14 +13,14 @@ import (
 
 // Client is a wrapper around the Kubernetes clientset
 type Client struct {
-	ClientSet kubernetes.Interface
-	Config    *rest.Config
+	ClientSet  kubernetes.Interface
+	Config     *rest.Config
+	ConfigPath string // Path to kubeconfig file
 }
 
 // NewClient creates a new Kubernetes client
-func NewClient(cmd *cobra.Command) (*Client, error) {
-	// Get kubeconfig path
-	kubeconfig, _ := cmd.Flags().GetString("kubeconfig")
+func NewClient(kubeconfigPath string) (*Client, error) {
+	kubeconfig := kubeconfigPath
 	if kubeconfig == "" {
 		if home := homedir.HomeDir(); home != "" {
 			kubeconfig = filepath.Join(home, ".kube", "config")
@@ -28,31 +28,32 @@ func NewClient(cmd *cobra.Command) (*Client, error) {
 	}
 
 	var config *rest.Config
-	var err error
 
-	// Check if kubeconfig exists
-	if _, err := os.Stat(kubeconfig); os.IsNotExist(err) {
-		// If not, try in-cluster config
+	// Check if kubeconfig exists on disk
+	if _, statErr := os.Stat(kubeconfig); os.IsNotExist(statErr) {
+		// Try in-cluster config
+		var err error
 		config, err = rest.InClusterConfig()
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to create in-cluster config (kubeconfig not found at %s): %v", kubeconfig, err)
 		}
 	} else {
-		// Load kubeconfig
+		// Load kubeconfig from file
+		var err error
 		config, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to load kubeconfig from %s: %v", kubeconfig, err)
 		}
 	}
 
-	// Create the clientset
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to create Kubernetes clientset: %v", err)
 	}
 
 	return &Client{
-		ClientSet: clientset,
-		Config:    config,
+		ClientSet:  clientset,
+		Config:     config,
+		ConfigPath: kubeconfig,
 	}, nil
 }

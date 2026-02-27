@@ -10,16 +10,49 @@ import (
 	"time"
 
 	"github.com/p404/kube-packet-replay/pkg/k8s"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	outpkg "github.com/p404/kube-packet-replay/pkg/output"
 )
 
-// DebugImage is the container image used for network debugging
-const DebugImage = "nicolaka/netshoot:latest"
+// DefaultdebugImage is the container image used for network debugging.
+// Pinned to a specific version to avoid supply chain risks.
+var debugImage = "nicolaka/netshoot:v0.13"
+
+// SetDebugImage overrides the default debug container image
+func SetDebugImage(image string) {
+	debugImage = image
+}
 
 // CapturePackets captures network packets from a Kubernetes pod
-func CapturePackets(client *k8s.Client, namespace, podName, containerName, filterExpr, outputFile string, duration time.Duration) error {
-	fmt.Printf("Capturing packets matching filter '%s' from pod %s/%s in namespace %s\n",
-		filterExpr, podName, containerName, namespace)
+func CapturePackets(client *k8s.Client, namespace, podName, containerName, filterExpr, outputFile string, duration time.Duration, verbose bool) error {
+	var err error
+	out := outpkg.Default()
+
+	// Show starting message with date
+	currentTime := time.Now().Format("2006-01-02 15:04:05")
+	out.Print("\n%s %s\n\n",
+		out.FormatBold("KUBE-PACKET-REPLAY CAPTURE STARTED AT:"),
+		out.Colorize(outpkg.ColorBlue, currentTime))
+
+	// Step 1: Setup and validation
+	out.Step(1, "Setting up packet capture")
+
+	// Use different formatting to emphasize the filter more
+	out.Print("  %s\n", out.FormatHighlight("FILTER: '"+filterExpr+"'"))
+
+	// Display the target pod name with highlighted formatting to make it clear
+	out.Print("  %s: %s\n",
+		out.Colorize(outpkg.ColorBlue, "Target Pod"),
+		out.FormatBold(podName))
+
+	// Display container name if specified
+	if containerName != "" {
+		out.Print("  %s: %s\n",
+			out.Colorize(outpkg.ColorBlue, "Container"),
+			out.FormatBold(containerName))
+	}
+	out.Print("  %s: %s\n",
+		out.Colorize(outpkg.ColorBlue, "Namespace"),
+		out.FormatBold(namespace))
 
 	// Create a debug container name with timestamp to avoid collisions
 	timestamp := time.Now().Unix()
@@ -28,221 +61,240 @@ func CapturePackets(client *k8s.Client, namespace, podName, containerName, filte
 		debugContainerName = fmt.Sprintf("debug-%d", timestamp)
 	}
 
-	// Set up tcpdump command
+	// Also use timestamp for the output filename if one wasn't specified
+	if outputFile == "" || outputFile == fmt.Sprintf("%s.pcap", podName) {
+		outputFile = fmt.Sprintf("%s-%d.pcap.gz", podName, timestamp)
+	} else if !strings.HasSuffix(outputFile, ".gz") {
+		// Add .gz extension if not already present
+		outputFile += ".gz"
+	}
+
+	// Store the original container name for fallback file access
+	origContainerName := containerName
+
+	// Construct tcpdump command with shell templates
+	// This lets us retrieve the capture file even if tcpdump exits
 	interfaceFlag := "any" // Capture on all interfaces
 
-	// Construct tcpdump command with filter expression
+	// Create filenames with timestamp for uniqueness
+	rawCaptureFile := fmt.Sprintf("/tmp/capture-%d.pcap", timestamp)
+	captureFilename := fmt.Sprintf("/tmp/capture-%d.pcap.gz", timestamp)
+
+	// Build the full tcpdump command using our shell templates
+	tcpdumpCmd := BuildTcpdumpCommand(interfaceFlag, filterExpr, rawCaptureFile, captureFilename)
+
 	command := []string{
 		"sh", "-c",
-		fmt.Sprintf("tcpdump -i %s -w /tmp/capture.pcap '%s'",
-			interfaceFlag, filterExpr),
+		tcpdumpCmd,
 	}
 
 	// Create debug container
-	if err := client.CreateDebugContainer(namespace, podName, containerName, DebugImage, command, debugContainerName); err != nil {
+	if verbose {
+		out.Info("Debug container command:")
+		out.Println(tcpdumpCmd)
+	}
+
+	out.Print("  Creating debug container %s...\n", out.FormatBold(debugContainerName))
+	err = client.CreateDebugContainerWithKubectl(namespace, podName, containerName, debugImage, command, debugContainerName)
+	if err != nil {
 		return fmt.Errorf("failed to create debug container: %v", err)
 	}
+	out.Success("  Done")
+	out.Println()
 
-	fmt.Println("Debug container created. Waiting for it to be ready...")
-
-	// Wait for the debug container to be ready
-	err := waitForDebugContainerReady(client, namespace, podName, debugContainerName)
-	if err != nil {
-		return fmt.Errorf("failed to wait for debug container: %v", err)
-	}
-
-	fmt.Println("Debug container is ready. Starting packet capture...")
-
+	// Step 2: Capturing packets
+	out.Step(2, "Capturing network packets")
 	if duration > 0 {
-		fmt.Printf("Capture will run for %s...\n", duration)
+		out.Print("  Capture will run for %s...\n", out.FormatBold(duration.String()))
 	} else {
-		fmt.Println("Press Ctrl+C to stop the capture...")
+		out.Print("  %s to stop the capture\n", out.Colorize(outpkg.ColorYellow, "Press Ctrl+C"))
 	}
 
-	// Handle signals to stop capture gracefully
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	// Show a spinner while capturing
+	spinner := out.StartSpinner("Capturing packets")
 
-	// Wait for signal or timeout
+	// Set up signal handling for graceful termination
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	signalChan := make(chan os.Signal, 1)
+	signal.Notify(signalChan, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(signalChan)
+
+	// Handle manual interruption with Ctrl+C
+	go func() {
+		<-signalChan
+		out.Warning("Interrupt received, stopping capture...")
+		cancel()
+		out.StopSpinner(spinner)
+	}()
+
+	// Handle duration-based interruption
 	if duration > 0 {
-		select {
-		case <-sigCh:
-			fmt.Println("Interrupt received, stopping capture...")
-		case <-time.After(duration):
-			fmt.Println("Capture duration reached, stopping...")
-		}
-	} else {
-		// Wait indefinitely until signal
-		<-sigCh
-		fmt.Println("Interrupt received, stopping capture...")
+		go func() {
+			time.Sleep(duration)
+			out.Info("Duration limit reached, stopping capture...")
+			cancel()
+			out.StopSpinner(spinner)
+		}()
 	}
 
-	// Get available container names to help with targeting the right container
-	availableContainers, err := getAvailableContainers(client, namespace, podName)
-	if err != nil {
-		fmt.Printf("Warning: Unable to get container list: %v\n", err)
+	// Wait for interruption
+	<-ctx.Done()
+
+	// Stop the spinner
+	out.StopSpinner(spinner)
+	time.Sleep(200 * time.Millisecond) // Give spinner a moment to clean up
+
+	out.Success("  Done")
+	out.Println()
+
+	// Step 3: Processing capture file
+	out.Step(3, "Processing capture file")
+
+	// Get list of containers for better debug container detection
+	containers := extractContainersFromPod(client, namespace, podName)
+	if len(containers) > 0 && verbose {
+		out.Print("  Available containers in pod: %v\n", containers)
 	}
 
-	// Try to find our debug container in the available containers list
-	targetContainer := findDebugContainer(availableContainers, debugContainerName)
-	
-	// Stop tcpdump by executing a command to kill it
-	killCmd := []string{"pkill", "tcpdump"}
-	_, err = client.ExecInContainer(namespace, podName, targetContainer, killCmd)
-	if err != nil {
-		fmt.Printf("Warning: Failed to stop tcpdump cleanly: %v\n", err)
-		
-		// Try with original debug container name
-		if targetContainer != debugContainerName {
-			_, err = client.ExecInContainer(namespace, podName, debugContainerName, killCmd)
-			if err != nil {
-				fmt.Printf("Warning: Failed with original debug container name: %v\n", err)
-			}
-		}
-		
-		// Try with literal container names from available containers
-		for _, c := range availableContainers {
-			if strings.Contains(c, "debug") {
-				_, err = client.ExecInContainer(namespace, podName, c, killCmd)
-				if err == nil {
-					targetContainer = c
-					fmt.Printf("Successfully stopped tcpdump in container: %s\n", c)
-					break
-				}
-			}
-		}
+	debugContainer := debugContainerName
+
+	if verbose {
+		out.Print("  Using debug container: %s\n", debugContainer)
 	}
 
-	// Wait for tcpdump to finish writing to the file
-	time.Sleep(2 * time.Second)
+	// Process the capture - First stop tcpdump
+	out.Print("  Stopping packet capture...\n")
+	_ = tryKillTcpdump(client, namespace, podName, debugContainer, verbose)
 
-	// Copy the capture file from the pod
-	fmt.Println("Copying capture file from the pod...")
+	// Wait for compression to complete and retrieve file
+	out.Print("  Waiting for container to process capture file...\n")
+	captureData, fileSuccess, _, _ := WaitForCompressedFile(
+		client, namespace, podName, debugContainer,
+		rawCaptureFile, captureFilename, verbose)
 
-	// Read file from pod
-	execCmd := []string{"cat", "/tmp/capture.pcap"}
-	var output string
-	
-	// First try with the container that worked for killing tcpdump
-	output, err = client.ExecInContainer(namespace, podName, targetContainer, execCmd)
-	if err != nil {
-		fmt.Printf("Warning: Failed to copy from target container: %v\n", err)
-		
-		// Try each container that has "debug" in the name
-		success := false
-		for _, c := range availableContainers {
-			if strings.Contains(c, "debug") {
-				output, err = client.ExecInContainer(namespace, podName, c, execCmd)
-				if err == nil {
-					fmt.Printf("Successfully copied file from container: %s\n", c)
-					success = true
-					break
-				}
-			}
-		}
-		
-		if !success {
-			// Also try with original container
-			if containerName != "" {
-				output, err = client.ExecInContainer(namespace, podName, containerName, execCmd)
-				if err != nil {
-					return fmt.Errorf("failed to read file from pod - tried all container options: %v", err)
-				}
+	// If we couldn't get the file from the debug container, try other containers
+	if !fileSuccess {
+		// Try with the original container
+		if origContainerName != "" {
+			if verbose {
+				out.Print("  Attempting to copy the capture file from the original container: %s\n", origContainerName)
 			} else {
-				return fmt.Errorf("failed to read file from pod - tried all container options")
+				out.Print("  Trying alternative container...\n")
+			}
+
+			// Try compressed file first, then raw if needed
+			var err2 error
+			var localOutput string
+			localOutput, err2 = tryExecCat(client, namespace, podName, origContainerName, captureFilename, verbose)
+			if err2 != nil && verbose {
+				out.Print("  Compressed file not found in original container, trying raw capture file...\n")
+				localOutput, err2 = tryExecCat(client, namespace, podName, origContainerName, rawCaptureFile, verbose)
+			}
+
+			if err2 == nil {
+				fileSuccess = true
+				captureData = localOutput
+				if verbose {
+					out.Print("  Successfully retrieved capture data (%d bytes) from original container.\n", len(captureData))
+				}
 			}
 		}
-	}
 
-	// Write file locally
-	err = os.WriteFile(outputFile, []byte(output), 0644)
-	if err != nil {
-		return fmt.Errorf("failed to write file locally: %v", err)
-	}
+		// If still not successful, try other containers
+		if !fileSuccess {
+			// Try with the debug container again (may still be running)
+			if verbose {
+				out.Print("  Trying debug container again...\n")
+			} else {
+				out.Print("  Checking other containers...\n")
+			}
 
-	fmt.Printf("Packet capture saved to %s\n", outputFile)
-	return nil
-}
+			var err2 error
+			var localOutput string
+			localOutput, err2 = tryExecCat(client, namespace, podName, debugContainer, captureFilename, verbose)
+			if err2 == nil {
+				fileSuccess = true
+				captureData = localOutput
+				if verbose {
+					out.Print("  Successfully retrieved capture data (%d bytes) from debug container (after stopping tcpdump).\n", len(captureData))
+				}
+			}
 
-// getAvailableContainers gets a list of available containers in a pod
-func getAvailableContainers(client *k8s.Client, namespace, podName string) ([]string, error) {
-	// This mimics the "kubectl get pod" command with container name extraction
-	cmd := []string{"sh", "-c", "echo $HOSTNAME"}
-	_, err := client.ExecInContainer(namespace, podName, "", cmd)
-	
-	// Extract container names from the error message if present
-	if err != nil {
-		errorMsg := err.Error()
-		if strings.Contains(errorMsg, "choose one of:") {
-			start := strings.Index(errorMsg, "[")
-			end := strings.Index(errorMsg, "]")
-			if start != -1 && end != -1 && end > start {
-				containerList := errorMsg[start+1:end]
-				containers := strings.Split(containerList, " ")
-				var result []string
+			// Try each container
+			if !fileSuccess {
+				// First try each app container in the pod
 				for _, c := range containers {
-					c = strings.TrimSpace(c)
-					if c != "" {
-						result = append(result, c)
+					// Skip debug containers as we already tried those
+					if strings.Contains(c, "debug") {
+						continue
+					}
+					if verbose {
+						out.Print("  Trying to copy capture file from app container: %s\n", c)
+					}
+					var err2 error
+					var localOutput string
+					localOutput, err2 = tryExecCat(client, namespace, podName, c, captureFilename, verbose)
+					if err2 == nil {
+						if verbose {
+							out.Print("  Successfully copied file from container: %s\n", c)
+						}
+						fileSuccess = true
+						captureData = localOutput
+						break
 					}
 				}
-				return result, nil
-			}
-		}
-		return nil, err
-	}
-	
-	// If no error, this is unusual but we'll return an empty list
-	return []string{}, nil
-}
 
-// findDebugContainer tries to find our debug container in the available containers list
-func findDebugContainer(containers []string, debugContainerName string) string {
-	// First try exact match
-	for _, c := range containers {
-		if c == debugContainerName {
-			return c
-		}
-	}
-	
-	// Then try partial match for debug containers
-	for _, c := range containers {
-		if strings.Contains(c, "debug") {
-			return c
-		}
-	}
-	
-	// Return original name if no match found
-	return debugContainerName
-}
-
-// waitForDebugContainerReady waits for the debug container to be ready
-func waitForDebugContainerReady(client *k8s.Client, namespace, podName, containerName string) error {
-	timeout := time.After(2 * time.Minute)
-	tick := time.Tick(2 * time.Second)
-
-	for {
-		select {
-		case <-timeout:
-			return fmt.Errorf("timed out waiting for debug container to be ready")
-		case <-tick:
-			pod, err := client.ClientSet.CoreV1().Pods(namespace).Get(
-				context.TODO(),
-				podName,
-				metav1.GetOptions{},
-			)
-			if err != nil {
-				return fmt.Errorf("failed to get pod: %v", err)
-			}
-
-			// Check if the container is ready
-			for _, cs := range pod.Status.EphemeralContainerStatuses {
-				if cs.Name == containerName {
-					if cs.State.Running != nil {
-						return nil // Container is running
+				// If still no success, try debug containers
+				if !fileSuccess {
+					for _, c := range containers {
+						if !strings.Contains(c, "debug") || c == debugContainer {
+							continue
+						}
+						if verbose {
+							out.Print("  Trying to copy capture file from debug container: %s\n", c)
+						}
+						var err2 error
+						var localOutput string
+						localOutput, err2 = tryExecCat(client, namespace, podName, c, captureFilename, verbose)
+						if err2 == nil {
+							if verbose {
+								out.Print("  Successfully copied file from container: %s\n", c)
+							}
+							fileSuccess = true
+							captureData = localOutput
+							break
+						}
 					}
 				}
 			}
 		}
 	}
+
+	if !fileSuccess {
+		return fmt.Errorf("failed to retrieve capture file from any container")
+	}
+
+	out.Success("  Done")
+	out.Println()
+
+	// Step 4: Save the file locally
+	out.Step(4, "Saving capture file")
+	bytes := len(captureData)
+	if verbose {
+		out.Print("  Retrieved %d bytes of capture data\n", bytes)
+	}
+	out.Print("  Saving to %s...\n", outputFile)
+
+	err3 := SaveCaptureToFile(outputFile, captureData, verbose)
+	if err3 != nil {
+		return err3
+	}
+
+	// Show the capture information and then the final done message
+	out.Print("  Packet capture downloaded: %s (%s)\n",
+		out.FormatBold(outputFile),
+		out.Colorize(outpkg.ColorGreen, formatBytes(int64(bytes))))
+	out.Success("  Done")
+	return nil
 }

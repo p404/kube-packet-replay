@@ -1,0 +1,82 @@
+name: E2E Tests
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: E2E Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Build binary
+        run: make build
+
+      - name: Install KIND
+        uses: helm/kind-action@v1
+        with:
+          install_only: true
+
+      - name: Create KIND cluster
+        run: |
+          kind create cluster \
+            --name kpr-e2e \
+            --config e2e/testdata/kind-config.yaml \
+            --wait 120s
+
+      - name: Verify cluster
+        run: |
+          kubectl cluster-info
+          kubectl get nodes -o wide
+
+      - name: Pre-pull images into KIND nodes
+        run: |
+          docker pull nicolaka/netshoot:v0.13
+          kind load docker-image nicolaka/netshoot:v0.13 --name kpr-e2e
+          docker pull nginx:1.25-alpine
+          kind load docker-image nginx:1.25-alpine --name kpr-e2e
+          docker pull curlimages/curl:8.5.0
+          kind load docker-image curlimages/curl:8.5.0 --name kpr-e2e
+
+      - name: Run E2E tests
+        env:
+          KPR_BINARY: ${{ github.workspace }}/build/kube-packet-replay
+        run: |
+          kind get kubeconfig --name kpr-e2e > /tmp/kpr-e2e-kubeconfig
+          KUBECONFIG=/tmp/kpr-e2e-kubeconfig go test -v -tags=e2e -timeout 10m -count=1 ./e2e/
+
+      - name: Collect cluster diagnostics on failure
+        if: failure()
+        run: |
+          echo "=== Nodes ==="
+          kubectl get nodes -o wide
+          echo ""
+          echo "=== Pods in test namespace ==="
+          kubectl get pods -n kpr-e2e-test -o wide || true
+          echo ""
+          echo "=== Events ==="
+          kubectl get events -n kpr-e2e-test --sort-by='.lastTimestamp' || true
+          echo ""
+          echo "=== Describe pods ==="
+          kubectl describe pods -n kpr-e2e-test || true
+
+      - name: Delete KIND cluster
+        if: always()
+        run: kind delete cluster --name kpr-e2e
